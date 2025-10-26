@@ -1,0 +1,49 @@
+# Scout Drone V1 - Mission Configuration
+
+# Hardware settings
+hardware:
+  simulation: true  # Set to false for real hardware
+  flight_controller_port: "/dev/ttyUSB0"
+  flight_controller_baud: 57600
+
+# Mission parameters
+mission:
+  search_altitude: 50.0      # meters
+  approach_altitude: 1.0     # meters (hover above person)
+  climb_speed: 2.0          # m/s
+  approach_speed: 3.0       # m/s
+  return_speed: 5.0         # m/s (faster on return)
+  scan_rate: 2.0            # Hz (scans per second)
+  hover_duration: 5.0       # seconds (time to hover over person)
+
+# Detection thresholds
+detection:
+  thermal_threshold: 0.7    # Minimum confidence for detection
+  
+  # Person classification
+  person_temp_min: 30.0     # °C (wet person in water)
+  person_temp_max: 37.0     # °C (normal body temp)
+  person_size_min: 0.3      # m² (minimum person area)
+  person_size_max: 2.0      # m² (maximum person area)
+  
+  # Boat classification (to ignore)
+  boat_size_min: 5.0        # m² (boats are bigger)
+  boat_temp_threshold: 50.0 # °C (engine heat signature)
+
+# Thermal camera specs (FLIR Lepton example)
+camera:
+  fov_horizontal: 51.0      # degrees
+  fov_vertical: 38.5        # degrees
+  resolution_x: 160         # pixels
+  resolution_y: 120         # pixels
+
+# LED pins (Raspberry Pi GPIO)
+led:
+  red_pin: 17
+  green_pin: 27
+
+# Safety limits
+safety:
+  max_altitude: 100.0       # meters (regulatory limit)
+  min_battery: 30.0         # percent (trigger RTH)
+  max_wind_speed: 15.0      # m/s (abort if exceeded)
