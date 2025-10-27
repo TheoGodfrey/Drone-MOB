@@ -1,12 +1,7 @@
-"""
-Random search algorithm - simple random pattern
-"""
-
-from .__init__ import SearchStrategy
 from core.drone import Position
 import random
 
-class RandomSearchStrategy(SearchStrategy):
+class RandomSearchStrategy:  # No inheritance needed
     """Random search algorithm - random pattern for search"""
     def get_next_position(self, drone, search_area, search_size):
         """Get the next position to search (random pattern)"""

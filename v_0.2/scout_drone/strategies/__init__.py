@@ -35,11 +35,7 @@ def list_available_strategies():
 
 # Auto-register strategies using factory functions
 from .flight.direct import create_direct_flight_strategy
-from .flight.safe_path import create_safe_path_flight_strategy
 from .search.random import create_random_search_strategy
-from .search.lawnmower import create_lawnmower_search_strategy
 
 register_flight_strategy('direct', create_direct_flight_strategy)
-register_flight_strategy('safe_path', create_safe_path_flight_strategy)
 register_search_strategy('random', create_random_search_strategy)
-register_search_strategy('lawnmower', create_lawnmower_search_strategy)
