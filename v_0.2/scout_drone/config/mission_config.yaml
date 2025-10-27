@@ -1,10 +1,32 @@
+# Mission-level configuration
+mission:
+  max_search_iterations: 50
+  search_timeout_seconds: 300
+
+# Drone fleet configuration (ready for multiple drones)
 drones:
-  type: simulated
-search_algorithm: random
-flight_algorithm: direct
-search_area:
-  x: 0.0
-  y: 0.0
-  z: 0.0
-search_size: 1000.0
-max_search_iterations: 50
+  - id: drone_1
+    type: simulated
+    role: spotter_and_payload  # Single drone does both for now
+
+# Strategy configuration
+strategies:
+  search:
+    algorithm: random
+    area:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    size: 1000.0
+  flight:
+    algorithm: direct
+
+# Health monitoring (for future use)
+health:
+  check_interval: 2.0
+  max_failures: 3
+
+# Simulation settings (for future use)
+simulation:
+  detection_seed: null  # Set to integer for deterministic behavior
+  random_seed: null

@@ -2,25 +2,13 @@
 Minimal drone interface for single-drone system
 """
 
-from dataclasses import dataclass
 import time
-
-@dataclass
-class Position:
-    """3D position (x, y, z)"""
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-
-    def distance_to(self, other: 'Position') -> float:
-        """Calculate Euclidean distance"""
-        return ((self.x - other.x)**2 + 
-                (self.y - other.y)**2 + 
-                (self.z - other.z)**2)**0.5
+from .position import Position
 
 class Drone:
     """Simplified drone interface for single-drone system"""
-    def __init__(self, is_simulated: bool = True):
+    def __init__(self, is_simulated: bool = True, drone_id: str = "drone_0"):
+        self.id = drone_id
         self.is_simulated = is_simulated
         self.position = Position(0, 0, 0)
         self.battery = 100.0
@@ -28,6 +16,7 @@ class Drone:
         self.state = "IDLE"
         self.last_heartbeat = time.time()
         self.camera = None
+        self.health_history = []
     
     def connect(self) -> bool:
         """Connect to drone (simplified)"""
@@ -64,3 +53,16 @@ class Drone:
     def update_position(self, new_position: Position) -> None:
         """Update drone position (for simulation)"""
         self.position = new_position
+    
+    def record_health(self):
+        """Record current health snapshot"""
+        self.health_history.append({
+            'timestamp': time.time(),
+            'battery': self.battery,
+            'connected': self.connected,
+            'healthy': self.is_healthy()
+        })
+        
+        # Keep only last 10 records
+        if len(self.health_history) > 10:
+            self.health_history.pop(0)
