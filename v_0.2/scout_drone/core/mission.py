@@ -101,33 +101,41 @@ class MissionController:
         self.logger.log("Preflight check complete", "info")
 
     def _scan_for_target(self) -> None:
-        """Scan for MOB using composed search strategy"""
-        # Get next position from search strategy
-        next_position = self.search_strategy.get_next_position(
-            self.drone, 
-            self.config['search_area'],
-            self.config['search_size']
-        )
-        
-        # Fly to position using flight strategy
-        delivery_position = self.flight_strategy.get_next_position(
-            self.drone, 
-            next_position
-        )
-        
-        self.drone.go_to(delivery_position)
-        self.logger.log(f"Searching at position: {delivery_position}", "debug")
-        
-        # Capture and analyze frame
-        frame = self.drone.camera.capture()
-        detections = self.drone.camera.detect(frame)
-        
-        # Process detections
-        for detection in detections:
-            if detection.is_person and detection.confidence >= 0.7:
-                self.target = detection
-                self.logger.log(f"Target detected at {detection.position}", "info")
-                return
+    """Scan for MOB using composed search strategy"""
+    # Get next position from search strategy
+    # Convert search_area dict to Position object
+    search_area_dict = self.config['search_area']
+    search_area_pos = Position(
+        search_area_dict['x'],
+        search_area_dict['y'],
+        search_area_dict['z']
+    )
+    
+    next_position = self.search_strategy.get_next_position(
+        self.drone, 
+        search_area_pos,  # Now passing Position object
+        self.config['search_size']
+    )
+    
+    # Fly to position using flight strategy
+    delivery_position = self.flight_strategy.get_next_position(
+        self.drone, 
+        next_position
+    )
+    
+    self.drone.go_to(delivery_position)
+    self.logger.log(f"Searching at position: {delivery_position}", "debug")
+    
+    # Capture and analyze frame
+    frame = self.drone.camera.capture()
+    detections = self.drone.camera.detect(frame)
+    
+    # Process detections
+    for detection in detections:
+        if detection.is_person and detection.confidence >= 0.7:
+            self.target = detection
+            self.logger.log(f"Target detected at {detection.position}", "info")
+            return
 
     def _deliver_payload(self) -> None:
         """Deliver payload using composed flight strategy"""
