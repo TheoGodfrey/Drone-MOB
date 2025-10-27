@@ -9,6 +9,7 @@ venv/
 *.egg-info/
 
 # Mission logs
+logs/
 mission.log
 
 # IDE

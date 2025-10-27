@@ -17,6 +17,8 @@ class Drone:
         self.last_heartbeat = time.time()
         self.camera = None
         self.health_history = []
+        self.led_color = "red"  # NEW: LED state
+
     
     def connect(self) -> bool:
         """Connect to drone (simplified)"""
@@ -66,3 +68,9 @@ class Drone:
         # Keep only last 10 records
         if len(self.health_history) > 10:
             self.health_history.pop(0)
+    
+    def set_led(self, color: str):
+        """Set LED color (simulated)"""
+        self.led_color = color
+        if self.is_simulated:
+            print(f"[{self.id}] LED: {color.upper()}")

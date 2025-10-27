@@ -145,8 +145,14 @@ class MissionController:
         """Log mission summary"""
         self.logger.log("=== MISSION SUMMARY ===", "info")
         self.logger.log(f"Drone ID: {self.drone.id}", "info")
+        self.logger.log(f"Search strategy: {self.search_strategy.name}", "info")
+        self.logger.log(f"Flight strategy: {self.flight_strategy.name}", "info")
         self.logger.log(f"Search iterations: {iterations}", "info")
+        self.logger.log(f"Max altitude reached: {self.drone.position.z}m", "info")
         self.logger.log(f"Target found: {self.target is not None}", "info")
+        if self.target:
+            self.logger.log(f"Target position: {self.target.position}", "info")
         self.logger.log(f"Final battery: {self.drone.battery}%", "info")
         self.logger.log(f"Detections: {self.drone.camera.detection_count}", "info")
+        self.logger.log(f"Final LED state: {self.drone.led_color}", "info")
         self.logger.log("Mission completed successfully", "info")

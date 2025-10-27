@@ -35,7 +35,11 @@ def list_available_strategies():
 
 # Auto-register strategies using factory functions
 from .flight.direct import create_direct_flight_strategy
+from .flight.precision_hover import create_precision_hover_flight_strategy
 from .search.random import create_random_search_strategy
+from .search.vertical_ascent import create_vertical_ascent_search_strategy
 
 register_flight_strategy('direct', create_direct_flight_strategy)
+register_flight_strategy('precision_hover', create_precision_hover_flight_strategy)
 register_search_strategy('random', create_random_search_strategy)
+register_search_strategy('vertical_ascent', create_vertical_ascent_search_strategy)

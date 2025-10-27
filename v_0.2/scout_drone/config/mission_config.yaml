@@ -1,32 +1,78 @@
 # Mission-level configuration
 mission:
-  max_search_iterations: 50
+  max_search_iterations: 30
   search_timeout_seconds: 300
 
-# Drone fleet configuration (ready for multiple drones)
+# Logging configuration
+logging:
+  log_dir: logs
+  max_logs: 50
+
+# Drone fleet configuration
 drones:
   - id: drone_1
     type: simulated
-    role: spotter_and_payload  # Single drone does both for now
+    role: spotter_and_payload
+
+# Camera configuration
+cameras:
+  thermal:
+    type: simulated  # simulated, flir_lepton, seek_thermal
+    resolution: [160, 120]
+    water_temp: 15.0
+    ambient_temp: 20.0
+  
+  visual:
+    type: simulated  # simulated, opencv, picamera
+    resolution: [640, 480]
+  
+  recording:
+    enabled: true
+    output_dir: recordings
+
+# Detection configuration
+detection:
+  method: fusion  # 'thermal_only', 'visual_only', or 'fusion'
+  
+  thermal:
+    temp_threshold: 10.0  # Degrees above water
+    min_area: 50          # Min pixels
+    max_area: 500         # Max pixels
+    min_confidence: 0.5
+  
+  visual:
+    use_color: true
+    use_motion: true
+    min_confidence: 0.6
+  
+  fusion:
+    thermal_weight: 0.7
+    visual_weight: 0.3
+    fusion_threshold: 0.75
+    max_position_error: 50  # pixels
 
 # Strategy configuration
 strategies:
   search:
-    algorithm: random
+    algorithm: vertical_ascent
     area:
       x: 0.0
       y: 0.0
       z: 0.0
     size: 1000.0
   flight:
-    algorithm: direct
+    algorithm: precision_hover
 
-# Health monitoring (for future use)
+# Vertical ascent parameters
+vertical_ascent:
+  max_altitude: 150.0
+  step_size: 5.0
+
+# Precision hover parameters
+precision_hover:
+  altitude_offset: 2.0
+
+# Health monitoring
 health:
   check_interval: 2.0
   max_failures: 3
-
-# Simulation settings (for future use)
-simulation:
-  detection_seed: null  # Set to integer for deterministic behavior
-  random_seed: null
