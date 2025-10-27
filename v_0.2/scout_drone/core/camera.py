@@ -37,6 +37,10 @@ class Camera:
             self.detection_count += 1
             x = random.uniform(-200, 200)
             y = random.uniform(-200, 200)
-            detections.append(Detection(Position(x, y, 0), True, random.uniform(0.7, 0.95)))
+            detections.append(Detection(
+                Position(x, y, 0), 
+                True, 
+                random.uniform(0.7, 0.95)
+            ))
         
         return detections
