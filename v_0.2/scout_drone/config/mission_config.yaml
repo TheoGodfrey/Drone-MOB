@@ -7,3 +7,4 @@ search_area:
   y: 0.0
   z: 0.0
 search_size: 1000.0
+max_search_iterations: 50
