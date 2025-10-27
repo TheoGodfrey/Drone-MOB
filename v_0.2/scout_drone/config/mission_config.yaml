@@ -1,0 +1,9 @@
+drones:
+  type: simulated
+search_algorithm: random
+flight_algorithm: direct
+search_area:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+search_size: 1000.0
