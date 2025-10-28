@@ -15,9 +15,9 @@ class Drone:
         self.connected = False
         self.state = "IDLE"
         self.last_heartbeat = time.time()
-        self.camera = None
+        self.dual_camera = None  # CHANGED from camera
         self.health_history = []
-        self.led_color = "red"  # NEW: LED state
+        self.led_color = "red"
 
     
     def connect(self) -> bool:
