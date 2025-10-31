@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drone-MOB GCS</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* Simple blink animation for connection status */
+        @keyframes blink {
+            50% { opacity: 0.3; }
+        }
+        .blink { animation: blink 1.5s infinite; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 flex flex-col h-screen">
+
+    <!-- Header -->
+    <header class="bg-gray-800 shadow-md p-3 flex justify-between items-center">
+        <h1 class="text-xl font-bold">Drone-MOB GCS</h1>
+        <div class="flex items-center space-x-2">
+            <div id="status-light" class="w-3 h-3 bg-red-500 rounded-full" title="Disconnected"></div>
+            <span id="status-text" class="text-sm text-red-400">CONNECTING...</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col md:flex-row p-4 gap-4 overflow-hidden">
+        
+        <!-- Left Panel: Telemetry -->
+        <div class="md:w-1/4 bg-gray-800 rounded-lg shadow-lg p-4 flex flex-col space-y-4 overflow-y-auto">
+            <h2 class="text-lg font-semibold border-b border-gray-700 pb-2">Telemetry</h2>
+            
+            <div>
+                <span class="text-sm text-gray-400">Mission Phase</span>
+                <p id="tel-mission-phase" class="text-2xl font-mono font-bold text-cyan-400">IDLE</p>
+            </div>
+            <div>
+                <span class="text-sm text-gray-400">Drone State</span>
+                <p id="tel-drone-state" class="text-xl font-mono text-gray-300">N/A</p>
+            </div>
+            <div>
+                <span class="text-sm text-gray-400">Battery</span>
+                <p id="tel-battery" class="text-xl font-mono text-gray-300">--%</p>
+            </div>
+
+            <div class="pt-2">
+                <span class="text-sm text-gray-400">Position (X, Y, Z)</span>
+                <p id="tel-position" class="text-xl font-mono text-gray-300">0.0, 0.0, 0.0</p>
+            </div>
+            
+            <div>
+                <span class="text-sm text-gray-400">Attitude (Roll, Pitch, Yaw)</span>
+                <p id="tel-attitude" class="text-xl font-mono text-gray-300">0.0, 0.0, 0.0</p>
+            </div>
+        </div>
+
+        <!-- Right Panel: Video Feed & Confirmation -->
+        <div class="flex-1 bg-gray-800 rounded-lg shadow-lg p-4 flex flex-col items-center justify-center">
+            
+            <!-- Target Confirmation Box (Hidden by default) -->
+            <div id="confirmation-box" class="hidden w-full max-w-lg bg-gray-700 border-4 border-yellow-500 rounded-lg shadow-2xl p-6 text-center z-10">
+                <h2 class="text-3xl font-bold text-yellow-400 mb-4">TARGET DETECTED</h2>
+                <p class="text-lg mb-2">Awaiting operator confirmation to deliver payload.</p>
+                <div class="font-mono bg-gray-800 p-4 rounded-md mb-6">
+                    <p>Type: <span id="confirm-source" class="font-bold">N/A</span></p>
+                    <p>Confidence: <span id="confirm-confidence" class="font-bold">N/A</span></p>
+                    <p>Est. Position: <span id="confirm-position" class="font-bold">N/A</span></p>
+                </div>
+                <!-- Placeholder for a target snapshot image -->
+                <div class="bg-gray-900 h-48 w-full rounded-md mb-6 flex items-center justify-center">
+                    <span id="confirm-image-placeholder" class="text-gray-500">Target Snapshot Would Appear Here</span>
+                </div>
+                
+                <div class="flex justify-around">
+                    <button onclick="rejectTarget()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-10 rounded-lg text-lg">
+                        REJECT (False)
+                    </button>
+                    <button onclick="confirmTarget()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-10 rounded-lg text-lg">
+                        CONFIRM (Deliver)
+                    </button>
+                </div>
+            </div>
+
+            <!-- Video/Event Log Placeholder -->
+            <div id="main-view" class="flex-1 w-full flex items-center justify-center">
+                <p class="text-gray-500 text-2xl">Live Video Feed / Event Log</p>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        const wsHost = "ws://localhost:8765";
+        let ws;
+
+        // --- DOM Elements ---
+        const statusLight = document.getElementById('status-light');
+        const statusText = document.getElementById('status-text');
+        const telMissionPhase = document.getElementById('tel-mission-phase');
+        const telDroneState = document.getElementById('tel-drone-state');
+        const telBattery = document.getElementById('tel-battery');
+        const telPosition = document.getElementById('tel-position');
+        const telAttitude = document.getElementById('tel-attitude');
+        const mainView = document.getElementById('main-view');
+        const confirmationBox = document.getElementById('confirmation-box');
+
+        // --- WebSocket Connection ---
+        function connect() {
+            ws = new WebSocket(wsHost);
+
+            ws.onopen = () => {
+                console.log("GCS Connected to server.");
+                statusLight.classList.remove('bg-red-500', 'blink');
+                statusLight.classList.add('bg-green-500');
+                statusText.textContent = "CONNECTED";
+                statusText.classList.remove('text-red-400');
+                statusText.classList.add('text-green-400');
+            };
+
+            ws.onclose = () => {
+                console.log("GCS Disconnected. Retrying in 3s...");
+                statusLight.classList.remove('bg-green-500');
+                statusLight.classList.add('bg-red-500', 'blink');
+                statusText.textContent = "DISCONNECTED";
+                statusText.classList.remove('text-green-400');
+                statusText.classList.add('text-red-400');
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket Error:", err);
+                ws.close();
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleMessage(message);
+                } catch (e) {
+                    console.error("Failed to parse incoming message:", event.data);
+                }
+            };
+        }
+
+        // --- Message Handling ---
+        function handleMessage(msg) {
+            // console.log("Received:", msg);
+            switch (msg.type) {
+                case 'telemetry':
+                    handleTelemetry(msg.data);
+                    break;
+                case 'PENDING_CONFIRMATION':
+                    handlePendingConfirmation(msg.data);
+                    break;
+                case 'TARGET_CONFIRMED':
+                case 'TARGET_REJECTED':
+                    hideConfirmationBox();
+                    break;
+            }
+        }
+
+        function handleTelemetry(data) {
+            telMissionPhase.textContent = data.mission_phase;
+            telDroneState.textContent = data.state;
+            telBattery.textContent = `${data.battery}%`;
+            telPosition.textContent = `${data.position.x}, ${data.position.y}, ${data.position.z}`;
+            telAttitude.textContent = `${data.attitude.roll}, ${data.attitude.pitch}, ${data.attitude.yaw}`;
+        }
+
+        function handlePendingConfirmation(data) {
+            console.log("Awaiting operator confirmation:", data);
+            document.getElementById('confirm-source').textContent = data.source;
+            document.getElementById('confirm-confidence').textContent = data.confidence.toFixed(2);
+            document.getElementById('confirm-position').textContent = `${data.position.x.toFixed(2)}, ${data.position.y.toFixed(2)}`;
+            
+            // TODO: Update image placeholder with data.target_image
+            // e.g., document.getElementById('confirm-image').src = `data:image/jpeg;base64,${data.target_image}`;
+
+            mainView.classList.add('hidden');
+            confirmationBox.classList.remove('hidden');
+        }
+
+        function hideConfirmationBox() {
+            mainView.classList.remove('hidden');
+            confirmationBox.classList.add('hidden');
+        }
+
+        // --- Operator Actions ---
+        function sendWebSocketMessage(payload) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(payload));
+            } else {
+                console.error("Cannot send message, WebSocket is not open.");
+            }
+        }
+
+        function confirmTarget() {
+            console.log("Sending: CONFIRM_TARGET");
+            sendWebSocketMessage({ type: "CONFIRM_TARGET" });
+            hideConfirmationBox();
+        }
+
+        function rejectTarget() {
+            console.log("Sending: REJECT_TARGET");
+            sendWebSocketMessage({ type: "REJECT_TARGET" });
+            hideConfirmationBox();
+        }
+
+        // Initial connection
+        connect();
+    </script>
+</body>
+</html>

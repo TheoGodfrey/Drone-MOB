@@ -1,6 +1,6 @@
 """
 Main entry point for single-drone MOB system.
-(Refactored for Pydantic Configs and Async Mission)
+(Refactored for GCS, Safety Decorators, and Async)
 """
 
 import yaml
@@ -9,7 +9,7 @@ import asyncio
 import traceback
 from pathlib import Path
 
-# CHANGED: Import the new MavlinkController
+# Import all core components
 from core.drone import Drone, SimulatedFlightController, MavlinkController
 from core.cameras.dual_camera import DualCameraSystem
 from core.cameras.thermal.simulated import SimulatedThermalCamera
@@ -18,6 +18,7 @@ from core.logger import MissionLogger
 from core.mission import MissionController
 from strategies import get_search_strategy, get_flight_strategy
 from core.config_models import Settings
+from core.safety import CollisionAvoider, StubObstacleSensor # NEW
 
 def load_config(config_path: str = "config/mission_config.yaml") -> Settings:
     """Load and validate configuration."""
@@ -44,14 +45,12 @@ def create_cameras(config: Settings) -> DualCameraSystem:
             ambient_temp=thermal_cfg.ambient_temp
         )
     else:
-        # In a real implementation, you'd add OpenCVCamera(0) or similar
         raise ValueError(f"Real thermal camera type '{thermal_cfg.type}' not implemented.")
     
     visual_cfg = config.cameras.visual
     if visual_cfg.type == 'simulated':
         visual_cam = SimulatedVisualCamera(resolution=visual_cfg.resolution)
     else:
-        # e.g., visual_cam = RealVisualCamera(visual_cfg.resolution)
         raise ValueError(f"Real visual camera type '{visual_cfg.type}' not implemented.")
     
     recording_cfg = config.cameras.recording
@@ -72,18 +71,29 @@ async def main():
         drone_config = config.drones[0]
         
         # 3. Create components
-        # --- NEW: Select controller based on config ---
+        # --- NEW: Apply Safety Decorator ---
+        
+        # 3a. Create the base flight controller
         if drone_config.type == 'simulated':
-            controller = SimulatedFlightController()
+            base_controller = SimulatedFlightController()
             print("Using SIMULATED Flight Controller")
         elif drone_config.type == 'real':
-            # This would connect to a real drone or a SITL instance
-            controller = MavlinkController(connection_string="udp:127.0.0.1:14550")
+            base_controller = MavlinkController(connection_string="udp:127.0.0.1:14550")
             print("Using REAL (Mavlink) Flight Controller")
         else:
             raise ValueError(f"Unknown drone type in config: '{drone_config.type}'")
             
-        drone = Drone(controller, drone_id=drone_config.id)
+        # 3b. Create the sensor suite for the avoider
+        # (In production, this would be a real sensor)
+        obstacle_sensor = StubObstacleSensor()
+            
+        # 3c. Wrap the base controller with the safety decorator
+        safe_controller = CollisionAvoider(base_controller, obstacle_sensor)
+        
+        # 3d. Create the Drone instance with the *safe* controller
+        drone = Drone(safe_controller, drone_id=drone_config.id)
+        
+        # --- End of Safety Decorator ---
         
         dual_camera = create_cameras(config) 
         
@@ -109,8 +119,10 @@ async def main():
         )
         
         # 5. Execute mission
-        print("Press ENTER to start mission (Ctrl+C to abort)...")
-        # input() # Uncomment this to wait for user input
+        print("---")
+        print("GCS Frontend is available at 'gcs_frontend.html'")
+        print("Starting mission... (Press Ctrl+C to abort)")
+        print("---")
         
         await mission.run()
         

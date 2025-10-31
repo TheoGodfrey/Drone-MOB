@@ -1,104 +1,131 @@
-"""Reusable mission behaviors"""
-from .position import Position
-from .drone import Drone
-from .detection.fusion_detector import FusionDetector
+"""
+Reusable asynchronous mission behaviors
+(Refactored for async, AI/Tracker, and Geolocation)
+"""
+import asyncio
 import time
+from .position import Position
+from .drone import Drone, Telemetry # NEW: Import Telemetry
+from .cameras.dual_camera import DualCameraSystem
+from .detection.fusion_detector import FusionDetector
+from .config_models import Settings
+from typing import List, Tuple
+from .cameras.base import Detection
+# NEW: Import geolocation tools
+from .navigation import CameraIntrinsics, image_to_world_position
 
 class SearchBehavior:
-    """Encapsulates search behavior with dual camera detection"""
-    def __init__(self, drone: Drone, search_strategy, flight_strategy, config):
+    """Encapsulates search behavior with dual camera and fusion tracker."""
+    
+    def __init__(self, 
+                 drone: Drone, 
+                 dual_camera: DualCameraSystem,
+                 search_strategy, 
+                 flight_strategy, 
+                 config: Settings):
+        
         self.drone = drone
+        self.dual_camera = dual_camera
         self.search_strategy = search_strategy
         self.flight_strategy = flight_strategy
         self.config = config
         self.iteration = 0
         
-        # Create detector based on config
-        detection_config = config.get('detection', {})
-        self.detector = FusionDetector(detection_config)
+        self.detector = FusionDetector(config.detection)
+        
+        # NEW: Create an intrinsics object from the config
+        self.intrinsics = CameraIntrinsics(config.cameras.intrinsics)
+        
+        self.last_detections: List[Detection] = []
     
-    def search_step(self) -> tuple:
+    async def search_step(self) -> Tuple[bool, Detection | None]:
         """
-        Execute one search step with dual camera detection.
-        Returns: (should_continue, detection_or_none)
+        Execute one asynchronous search step.
+        Returns: (should_continue, confirmed_detection_or_none)
         """
-        if self.iteration >= self.config['mission']['max_search_iterations']:
+        max_iter = self.config.mission.max_search_iterations
+        if self.iteration >= max_iter:
             return False, None
         
-        # Get next search position
-        search_area = self.config['strategies']['search']['area']
-        search_area_pos = Position(
-            search_area['x'],
-            search_area['y'],
-            search_area['z']
-        )
+        # 1. Get next search position
+        search_area_cfg = self.config.strategies.search.area
+        search_area_pos = Position(search_area_cfg.x, search_area_cfg.y, search_area_cfg.z)
+        search_size = self.config.strategies.search.size
         
         next_position = self.search_strategy.get_next_position(
-            self.drone,
-            search_area_pos,
-            self.config['strategies']['search']['size']
+            self.drone, search_area_pos, search_size
         )
         
-        # Fly to position
+        # 2. Fly to position
         flight_position = self.flight_strategy.get_next_position(self.drone, next_position)
-        self.drone.go_to(flight_position)
+        await self.drone.go_to(flight_position)
         
-        # Capture synchronized frame from both cameras
-        dual_frame = self.drone.dual_camera.capture_synchronized()
+        # 3. Capture synchronized frame
+        dual_frame = await self.dual_camera.capture_synchronized()
         
-        # Detect using sensor fusion
-        detections = self.detector.detect(dual_frame)
+        # 4. Get latest telemetry (crucial for geolocation)
+        # We assume update_telemetry() was called in the main mission loop,
+        # so self.drone.telemetry is up-to-date.
+        current_telemetry = self.drone.telemetry
         
-        # Return first high-confidence detection
-        for detection in detections:
-            if detection.is_person and detection.confidence >= 0.7:
-                # Convert image coordinates to world position
-                detection.position_world = self._image_to_world_position(
-                    detection.position_image,
-                    self.drone.position
-                )
-                return False, detection  # Found!
+        # 5. Detect
+        confirmed_detections = await self.detector.detect(dual_frame)
+        self.last_detections = confirmed_detections
         
         self.iteration += 1
+        
+        # 6. Return first high-confidence detection
+        if confirmed_detections:
+            best_detection = max(confirmed_detections, key=lambda d: d.confidence)
+            
+            # --- CHANGED: Use real geolocation ---
+            best_detection.position_world = self._image_to_world_position(
+                best_detection.position_image,
+                current_telemetry
+            )
+            return False, best_detection  # Found!
+        
         return True, None  # Keep searching
     
-    def _image_to_world_position(self, image_pos: tuple, drone_pos: Position) -> Position:
+    def get_last_detections(self) -> List[Detection]:
+        return self.last_detections
+
+    # --- CHANGED: This now calls the real function ---
+    def _image_to_world_position(self, 
+                                 image_pos: tuple, 
+                                 drone_telemetry: Telemetry) -> Position:
         """
-        Convert image coordinates to world position
-        Simplified - assumes nadir (straight down) view
+        Wrapper for the real geolocation function.
         """
-        # For now, place detection at ground level below drone
-        # In real system, would use camera calibration + altitude
-        return Position(
-            drone_pos.x,
-            drone_pos.y,
-            0.0  # Water surface
+        return image_to_world_position(
+            pixel=image_pos,
+            drone_telemetry=drone_telemetry,
+            intrinsics=self.intrinsics
+            # ground_level_z can be passed from config if needed
         )
 
 class DeliveryBehavior:
-    """Encapsulates payload delivery with LED signaling"""
+    """Encapsulates payload delivery with LED signaling."""
+    
     def __init__(self, drone: Drone, flight_strategy):
         self.drone = drone
         self.flight_strategy = flight_strategy
     
-    def deliver_to(self, target_position: Position):
-        """Deliver payload to target with LED signaling"""
-        # Set LED to red (searching/approaching)
-        self.drone.set_led("red")
+    async def deliver_to(self, target_position: Position):
+        """Deliver payload to target with LED signaling."""
+        await self.drone.set_led("red")
         
-        # Fly to delivery position (2m above target)
-        delivery_position = self.flight_strategy.get_next_position(
-            self.drone,
-            target_position
+        # Fly to delivery position (e.g., 2m above target)
+        # We get the altitude offset from the config
+        hover_config = self.drone.config.precision_hover # <-- This is a bit of a hack
+        delivery_position = Position(
+             target_position.x, 
+             target_position.y,
+             target_position.z + hover_config.altitude_offset
         )
-        self.drone.go_to(delivery_position)
-        self.drone.hover()
         
-        # Simulate payload delivery sequence
-        time.sleep(1.0)
-        
-        # Change LED to green (delivery complete)
-        self.drone.set_led("green")
-        
-        # Hold position briefly
-        time.sleep(2.0)
+        await self.drone.go_to(delivery_position)
+        await self.drone.hover()
+        await asyncio.sleep(1.0)
+        await self.drone.set_led("green")
+        await asyncio.sleep(2.0)
