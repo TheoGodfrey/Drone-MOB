@@ -1,8 +1,10 @@
 """
-Formal mission state machine using the 'transitions' library.
+Formal mission state machine for a *single drone*.
+(Refactored for MQTT publishing)
 """
 from enum import Enum
 from transitions.extensions.asyncio import AsyncMachine
+from .comms import MqttClient
 
 class MissionPhase(Enum):
     """Mission phases (Updated)"""
@@ -10,7 +12,7 @@ class MissionPhase(Enum):
     PREFLIGHT = "PREFLIGHT"
     TAKEOFF = "TAKEOFF"
     SEARCHING = "SEARCHING"
-    TARGET_PENDING_CONFIRMATION = "PENDING_CONFIRMATION" # NEW
+    TARGET_PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
     DELIVERING = "DELIVERING"
     RETURNING = "RETURNING"
     LANDING = "LANDING"
@@ -27,49 +29,36 @@ class MissionPhase(Enum):
 
 class MissionStateMachine:
     """
-    Manages the mission's formal state transitions by attaching an
-    AsyncMachine to the MissionController instance.
+    Manages the mission's formal state transitions and reports
+    changes to the Coordinator via MQTT.
     """
-    def __init__(self, controller):
+    def __init__(self, controller: 'MissionController', mqtt: MqttClient):
         """
         Initializes and attaches the state machine to the controller.
         """
+        self.controller = controller
+        self.mqtt = mqtt
         states = [e for e in MissionPhase]
 
         # Define all valid transitions
         transitions = [
+            # Mission start (triggered by MQTT)
             ['start_mission', MissionPhase.IDLE, MissionPhase.PREFLIGHT, 'after', '_run_preflight'],
             
-            # Preflight path
             ['preflight_success', MissionPhase.PREFLIGHT, MissionPhase.TAKEOFF, 'after', '_run_takeoff'],
-            
-            # Takeoff path
             ['takeoff_success', MissionPhase.TAKEOFF, MissionPhase.SEARCHING, 'after', '_run_search_step'],
             
-            # --- UPDATED Search/Confirm/Deliver Path ---
-            # Search finds a target, moves to PENDING
+            # Search path
             ['target_sighted', MissionPhase.SEARCHING, MissionPhase.TARGET_PENDING_CONFIRMATION, 'after', '_run_pending_confirmation'],
-            
-            # Search finishes with no target
             ['search_complete_negative', MissionPhase.SEARCHING, MissionPhase.RETURNING, 'after', '_run_return_to_home'],
             
-            # Operator confirms the target
-            ['operator_confirm_target', MissionPhase.TARGET_PENDING_CONFIRMATION, MissionPhase.DELIVERING, 'after', '_run_delivery'],
+            # GCS/Coordinator Confirmation Path
+            ['gcs_confirm_target', MissionPhase.TARGET_PENDING_CONFIRMATION, MissionPhase.DELIVERING, 'after', '_run_delivery'],
+            ['gcs_reject_target', MissionPhase.TARGET_PENDING_CONFIRMATION, MissionPhase.SEARCHING, 'after', '_run_search_step'],
             
-            # Operator rejects the target
-            ['operator_reject_target', MissionPhase.TARGET_PENDING_CONFIRMATION, MissionPhase.SEARCHING, 'after', '_run_search_step'],
-            
-            # Delivery path
             ['delivery_complete', MissionPhase.DELIVERING, MissionPhase.RETURNING, 'after', '_run_return_to_home'],
-            # --- End of Updated Path ---
-            
-            # Return path
             ['arrived_home', MissionPhase.RETURNING, MissionPhase.LANDING, 'after', '_run_land'],
-            
-            # Land path
             ['land_complete', MissionPhase.LANDING, MissionPhase.COMPLETED, 'after', '_log_mission_summary'],
-
-            # Emergency path (can be triggered from any state)
             ['trigger_emergency', '*', MissionPhase.EMERGENCY, 'after', '_run_emergency_land']
         ]
 
@@ -78,5 +67,17 @@ class MissionStateMachine:
             states=states,
             transitions=transitions,
             initial=MissionPhase.IDLE,
-            send_event=True
+            send_event=True,
+            # NEW: Automatically publish every state change to MQTT
+            after_state_change=self._publish_state_change
         )
+
+    async def _publish_state_change(self, event):
+        """Callback to publish the new state to the Coordinator."""
+        new_state = event.state.value
+        drone_id = self.controller.drone.id
+        await self.mqtt.publish(f"fleet/state/{drone_id}", {
+            "state": new_state,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+

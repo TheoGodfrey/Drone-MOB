@@ -4,12 +4,15 @@ Pydantic models for validating the mission_config.yaml file.
 from typing import List, Tuple, Literal
 from pydantic import BaseModel, Field
 
-# --- NEW: GCS Server Config ---
+class MqttConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 1883
+    base_topic: str = "drone_mob"
+
 class GcsConfig(BaseModel):
     host: str = "localhost"
     port: int = 8765
 
-# --- NEW: Camera Intrinsics Config ---
 class CameraIntrinsicsConfig(BaseModel):
     width: int = 640
     height: int = 480

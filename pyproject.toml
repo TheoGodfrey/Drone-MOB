@@ -19,11 +19,13 @@ opencv-python = ">=4.5.0"
 # Added during refactoring
 pydantic = ">=2.0"
 transitions = {version = ">=0.9.0", extras = ["async"]}
-
-# NEW: Added for GCS and Navigation
 websockets = ">=12.0"
-numpy = ">=1.21.0" # numpy was already present, but explicitly needed for nav
+numpy = ">=1.21.0"
+
+# NEW: Added for Comms Bus
+paho-mqtt = ">=2.0.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
