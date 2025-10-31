@@ -2,11 +2,23 @@
 Pydantic models for validating the mission_config.yaml file.
 """
 from typing import List, Tuple, Literal
-
 from pydantic import BaseModel, Field
 
-# --- Camera Models ---
+# --- NEW: GCS Server Config ---
+class GcsConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 8765
 
+# --- NEW: Camera Intrinsics Config ---
+class CameraIntrinsicsConfig(BaseModel):
+    width: int = 640
+    height: int = 480
+    fx: float = 800.0  # Focal length in x
+    fy: float = 800.0  # Focal length in y
+    cx: float = 320.0  # Principal point x
+    cy: float = 240.0  # Principal point y
+
+# --- Camera Models (Updated) ---
 class ThermalCameraConfig(BaseModel):
     type: Literal["simulated", "flir_lepton", "seek_thermal"]
     resolution: Tuple[int, int]
@@ -25,9 +37,9 @@ class CameraConfig(BaseModel):
     thermal: ThermalCameraConfig
     visual: VisualCameraConfig
     recording: RecordingConfig
+    intrinsics: CameraIntrinsicsConfig = Field(default_factory=CameraIntrinsicsConfig) # NEW
 
-# --- Detection Models ---
-
+# --- Detection Models (Unchanged) ---
 class ThermalDetectionConfig(BaseModel):
     temp_threshold: float = 10.0
     min_area: int = 50
@@ -51,8 +63,7 @@ class DetectionConfig(BaseModel):
     visual: VisualDetectionConfig
     fusion: FusionDetectionConfig
 
-# --- Strategy Models ---
-
+# --- Strategy Models (Unchanged) ---
 class SearchAreaConfig(BaseModel):
     x: float = 0.0
     y: float = 0.0
@@ -70,8 +81,7 @@ class StrategyConfig(BaseModel):
     search: SearchStrategyConfig
     flight: FlightStrategyConfig
 
-# --- Other Component Models ---
-
+# --- Other Component Models (Updated) ---
 class MissionConfig(BaseModel):
     max_search_iterations: int = 30
     search_timeout_seconds: int = 300
@@ -92,12 +102,18 @@ class VerticalAscentConfig(BaseModel):
 class PrecisionHoverConfig(BaseModel):
     altitude_offset: float = 2.0
 
-# --- Top-Level Settings Model ---
+class HealthConfig(BaseModel):
+    min_battery_preflight: float = 50.0
+    min_battery_emergency: float = 20.0
+    max_heartbeat_latency: float = 5.0
 
+# --- Top-Level Settings Model (Updated) ---
 class Settings(BaseModel):
     """The root model for the entire mission_config.yaml."""
     mission: MissionConfig
     logging: LoggingConfig
+    health: HealthConfig
+    gcs: GcsConfig = Field(default_factory=GcsConfig) # NEW
     drones: List[DroneConfig]
     cameras: CameraConfig
     detection: DetectionConfig

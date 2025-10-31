@@ -5,74 +5,51 @@ Includes Base, Simulated, and MAVLink implementations.
 
 import asyncio
 import time
+import math
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .position import Position
 
-# --- Telemetry Dataclass (No Change) ---
-
+# --- Telemetry Dataclass (Updated) ---
 @dataclass
 class Telemetry:
     """Holds the complete state of the drone."""
     position: Position = Position(0, 0, 0)
+    attitude_roll: float = 0.0   # NEW: Roll in degrees
+    attitude_pitch: float = 0.0  # NEW: Pitch in degrees
+    attitude_yaw: float = 0.0    # NEW: Yaw in degrees
     battery: float = 100.0
     is_connected: bool = False
-    state: str = "IDLE"  # e.g., IDLE, FLYING, HOVERING, LANDING
+    state: str = "IDLE"
     led_color: str = "off"
     last_heartbeat: float = 0.0
 
-# --- BaseFlightController Interface (No Change) ---
 
+# --- BaseFlightController Interface (Unchanged) ---
 class BaseFlightController(ABC):
-    """Abstract interface for a flight controller (real or simulated)."""
     
     @abstractmethod
-    async def connect(self) -> bool:
-        """Establish connection to the flight controller."""
-        pass
-
+    async def connect(self) -> bool: pass
     @abstractmethod
-    async def disconnect(self) -> None:
-        """Close connection."""
-        pass
-    
+    async def disconnect(self) -> None: pass
     @abstractmethod
-    async def takeoff(self, altitude: float) -> bool:
-        """Arm and take off to a specific relative altitude."""
-        pass
-
+    async def takeoff(self, altitude: float) -> bool: pass
     @abstractmethod
-    async def go_to(self, position: Position) -> bool:
-        """Navigate to a new 3D position in the world frame."""
-        pass
-
+    async def go_to(self, position: Position) -> bool: pass
     @abstractmethod
-    async def hover(self) -> bool:
-        """Stop and hover at the current position."""
-        pass
-
+    async def hover(self) -> bool: pass
     @abstractmethod
-    async def land(self) -> bool:
-        """Land at the current x,y position."""
-        pass
-    
+    async def land(self) -> bool: pass
     @abstractmethod
-    async def set_led(self, color: str) -> None:
-        """Set the color of an onboard indicator LED."""
-        pass
-
+    async def set_led(self, color: str) -> None: pass
     @abstractmethod
-    async def get_telemetry(self) -> Telemetry:
-        """Get the latest telemetry data from the drone."""
-        pass
+    async def get_telemetry(self) -> Telemetry: pass
 
-# --- Drone Class (No Change) ---
 
+# --- Drone Class (Unchanged) ---
 class Drone:
-    """
-    High-level Drone class.
-    Manages state and delegates flight commands to a controller (HAL).
-    """
+    """High-level Drone class. Manages state and delegates flight commands."""
     def __init__(self, controller: BaseFlightController, drone_id: str = "drone_0"):
         self.id = drone_id
         self.controller = controller
@@ -80,7 +57,6 @@ class Drone:
         self.health_history = []
 
     async def connect(self) -> bool:
-        """Connect to the flight controller and update state."""
         success = await self.controller.connect()
         self.telemetry.is_connected = success
         return success
@@ -92,8 +68,7 @@ class Drone:
     async def takeoff(self, altitude: float) -> bool:
         self.telemetry.state = "TAKING_OFF"
         success = await self.controller.takeoff(altitude)
-        if success:
-            self.telemetry.state = "HOVERING"
+        if success: self.telemetry.state = "HOVERING"
         return success
 
     async def go_to(self, position: Position) -> bool:
@@ -113,32 +88,25 @@ class Drone:
         self.telemetry.led_color = color
 
     async def update_telemetry(self) -> None:
-        """Poll the controller for the latest state."""
         self.telemetry = await self.controller.get_telemetry()
         self.telemetry.last_heartbeat = time.time()
         self.record_health()
 
     def is_healthy(self) -> bool:
-        """Check if drone is healthy based on latest telemetry."""
         return (
             self.telemetry.is_connected and
-            self.telemetry.battery > 20.0 and # TODO: Use config value
+            self.telemetry.battery > 20.0 and
             (time.time() - self.telemetry.last_heartbeat) < 5.0
         )
 
     def record_health(self):
-        """Record current health snapshot."""
         self.health_history.append(self.telemetry)
-        if len(self.health_history) > 10:
-            self.health_history.pop(0)
+        if len(self.health_history) > 10: self.health_history.pop(0)
 
 
-# --- SimulatedFlightController Implementation (No Change) ---
-
+# --- SimulatedFlightController (Updated) ---
 class SimulatedFlightController(BaseFlightController):
-    """
-    Simulation of the flight controller that implements the abstract interface.
-    """
+    """Simulation of the flight controller."""
     def __init__(self):
         self._telemetry = Telemetry()
         print("[SimulatedController] Initialized.")
@@ -169,15 +137,24 @@ class SimulatedFlightController(BaseFlightController):
         current_pos = self._telemetry.position
         dist = current_pos.distance_to(position)
         print(f"[SimulatedController] Flying from {current_pos} to {position} ({dist:.1f}m)...")
+        
+        # Simulate yaw (drone turns to face target)
+        self._telemetry.attitude_yaw = math.degrees(math.atan2(position.y - current_pos.y, position.x - current_pos.x))
+        # Simulate slight roll/pitch during movement
+        self._telemetry.attitude_pitch = random.uniform(-5.0, 5.0)
+
         await asyncio.sleep(dist / 10.0) 
         self._telemetry.position = position
         self._telemetry.state = "HOVERING"
+        self._telemetry.attitude_pitch = 0.0 # Level out
         print(f"[SimulatedController] Arrived at {position}.")
         return True
 
     async def hover(self) -> bool:
         print("[SimulatedController] Hovering.")
         self._telemetry.state = "HOVERING"
+        self._telemetry.attitude_pitch = random.uniform(-0.5, 0.5) # Slight hover movement
+        self._telemetry.attitude_roll = random.uniform(-0.5, 0.5)
         await asyncio.sleep(0.1)
         return True
 
@@ -186,6 +163,8 @@ class SimulatedFlightController(BaseFlightController):
         await asyncio.sleep(2.0)
         self._telemetry.position.z = 0
         self._telemetry.state = "IDLE"
+        self._telemetry.attitude_pitch = 0.0
+        self._telemetry.attitude_roll = 0.0
         print("[SimulatedController] Landed.")
         return True
 
@@ -198,21 +177,18 @@ class SimulatedFlightController(BaseFlightController):
         if self._telemetry.state != "IDLE":
             self._telemetry.battery -= 0.01
         self._telemetry.last_heartbeat = time.time()
-        return self.telemetry
+        # Add slight hover drift to attitude
+        if self._telemetry.state == "HOVERING":
+             self._telemetry.attitude_pitch = random.uniform(-0.5, 0.5)
+             self._telemetry.attitude_roll = random.uniform(-0.5, 0.5)
+        return self._telemetry
 
 
-# --- NEW: MavlinkFlightController Implementation ---
-
+# --- MavlinkFlightController (Updated) ---
 class MavlinkController(BaseFlightController):
-    """
-    Hardware implementation of the flight controller using MAVLink.
-    This class would wrap a library like DroneKit or PyMAVLink.
-    
-    NOTE: This is a *simulated* implementation of the real-world logic.
-    """
+    """Hardware implementation of the flight controller using MAVLink."""
     def __init__(self, connection_string: str = "udp:127.0.0.1:14550"):
-        # In a real implementation, you would initialize the connection here.
-        # e.g., from dronekit import connect
+        # e.g., from dronekit import connect, VehicleMode, LocationGlobalRelative
         # self.vehicle = None
         self.connection_string = connection_string
         self._telemetry = Telemetry()
@@ -220,14 +196,9 @@ class MavlinkController(BaseFlightController):
 
     async def connect(self) -> bool:
         print(f"[MavlinkController] Connecting to {self.connection_string}...")
-        # e.g., self.vehicle = connect(self.connection_string, wait_ready=True)
+        # e.g., self.vehicle = connect(self.connection_string, wait_ready=True, timeout=10)
         await asyncio.sleep(2.0) # Simulate connection timeout
-        
-        # Check if connection was successful
-        # if not self.vehicle:
-        #    print("[MavlinkController] ERROR: Connection failed.")
-        #    return False
-            
+        # if not self.vehicle: ...
         self._telemetry.is_connected = True
         self._telemetry.last_heartbeat = time.time()
         print("[MavlinkController] Vehicle connected.")
@@ -244,18 +215,10 @@ class MavlinkController(BaseFlightController):
         print("[MavlinkController] Arming vehicle...")
         # e.g., self.vehicle.mode = VehicleMode("GUIDED")
         # e.g., self.vehicle.armed = True
-        await asyncio.sleep(1.0) # Simulate mode change and arming
-        
-        # while not self.vehicle.armed:
-        #    print("...waiting to arm")
-        #    await asyncio.sleep(0.5)
-            
+        await asyncio.sleep(1.0) 
         print(f"[MavlinkController] Sending takeoff command to {altitude}m...")
         # e.g., self.vehicle.simple_takeoff(altitude)
-        
-        # In a real implementation, you would loop until target altitude is reached
         await asyncio.sleep(3.0) # Simulate climb
-        
         self._telemetry.position.z = altitude
         self._telemetry.state = "HOVERING"
         print(f"[MavlinkController] Takeoff complete.")
@@ -263,15 +226,10 @@ class MavlinkController(BaseFlightController):
 
     async def go_to(self, position: Position) -> bool:
         print(f"[MavlinkController] Setting mode to GUIDED...")
-        # e.g., self.vehicle.mode = VehicleMode("GUIDED")
-        
         print(f"[MavlinkController] Flying to {position}...")
         # e.g., loc = LocationGlobalRelative(position.x, position.y, position.z)
         # e.g., self.vehicle.simple_goto(loc)
-        
-        # In a real implementation, you would loop until target is reached
         await asyncio.sleep(2.0) # Simulate flight
-        
         self._telemetry.position = position
         self._telemetry.state = "HOVERING"
         print(f"[MavlinkController] Arrived at {position}.")
@@ -287,32 +245,36 @@ class MavlinkController(BaseFlightController):
     async def land(self) -> bool:
         print("[MavlinkController] Setting mode to LAND...")
         # e.g., self.vehicle.mode = VehicleMode("LAND")
-        
-        # In a real implementation, you would loop until disarmed
         await asyncio.sleep(3.0) # Simulate landing
-        
         self._telemetry.position.z = 0
         self._telemetry.state = "IDLE"
         print("[MavlinkController] Landed and disarmed.")
         return True
 
     async def set_led(self, color: str):
-        # MAVLink doesn't have a universal LED command,
-        # this would be a custom MAVLink message or GPIO control.
         print(f"[MavlinkController] (SIMULATED) Set LED to {color.upper()}")
         self._telemetry.led_color = color
         await asyncio.sleep(0.01)
 
     async def get_telemetry(self) -> Telemetry:
-        # In a real implementation, you would read from the vehicle object
-        # e.g., pos = self.vehicle.location.global_relative_frame
-        # e.g., batt = self.vehicle.battery
-        
-        # Simulating live updates
+        # --- Real MAVLink Implementation ---
+        # if self.vehicle:
+        #    loc = self.vehicle.location.global_relative_frame
+        #    att = self.vehicle.attitude
+        #    batt = self.vehicle.battery
+        #    self._telemetry.position = Position(loc.lat, loc.lon, loc.alt) # NOTE: Lat/Lon, not X/Y
+        #    self._telemetry.attitude_roll = math.degrees(att.roll)
+        #    self._telemetry.attitude_pitch = math.degrees(att.pitch)
+        #    self._telemetry.attitude_yaw = math.degrees(att.yaw)
+        #    self._telemetry.battery = batt.level
+        #    self._telemetry.is_connected = True
+        #    self._telemetry.state = self.vehicle.mode.name
+        # else:
+        #    self._telemetry.is_connected = False
+
+        # --- Simulated MAVLink Implementation ---
         if self._telemetry.state != "IDLE":
-            self._telemetry.battery -= 0.02 # Real drones use more power
-        
+            self._telemetry.battery -= 0.02
         self._telemetry.last_heartbeat = time.time()
         
-        # print("[MavlinkController] Telemetry polled.")
         return self._telemetry
