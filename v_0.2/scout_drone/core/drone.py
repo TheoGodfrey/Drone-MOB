@@ -1,5 +1,6 @@
 """
 Drone interface and Hardware Abstraction Layer (HAL) for flight controllers.
+Includes Base, Simulated, and MAVLink implementations.
 """
 
 import asyncio
@@ -8,7 +9,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .position import Position
 
-# NEW: A standardized dataclass for all drone telemetry.
+# --- Telemetry Dataclass (No Change) ---
+
 @dataclass
 class Telemetry:
     """Holds the complete state of the drone."""
@@ -19,8 +21,8 @@ class Telemetry:
     led_color: str = "off"
     last_heartbeat: float = 0.0
 
+# --- BaseFlightController Interface (No Change) ---
 
-# NEW: Defines the "engine" or "driver" for a drone.
 class BaseFlightController(ABC):
     """Abstract interface for a flight controller (real or simulated)."""
     
@@ -64,6 +66,7 @@ class BaseFlightController(ABC):
         """Get the latest telemetry data from the drone."""
         pass
 
+# --- Drone Class (No Change) ---
 
 class Drone:
     """
@@ -72,12 +75,9 @@ class Drone:
     """
     def __init__(self, controller: BaseFlightController, drone_id: str = "drone_0"):
         self.id = drone_id
-        self.controller = controller  # CHANGED: Now uses dependency injection
+        self.controller = controller
         self.telemetry = Telemetry()
         self.health_history = []
-        
-        # CHANGED: The drone no longer owns the camera system.
-        # It is a separate component.
 
     async def connect(self) -> bool:
         """Connect to the flight controller and update state."""
@@ -116,8 +116,6 @@ class Drone:
         """Poll the controller for the latest state."""
         self.telemetry = await self.controller.get_telemetry()
         self.telemetry.last_heartbeat = time.time()
-        
-        # CHANGED: Health is recorded based on telemetry, not internal state
         self.record_health()
 
     def is_healthy(self) -> bool:
@@ -135,12 +133,11 @@ class Drone:
             self.health_history.pop(0)
 
 
-# --- Implementation Example ---
+# --- SimulatedFlightController Implementation (No Change) ---
 
 class SimulatedFlightController(BaseFlightController):
     """
     Simulation of the flight controller that implements the abstract interface.
-    This contains the logic from the *original* Drone class.
     """
     def __init__(self):
         self._telemetry = Telemetry()
@@ -148,7 +145,7 @@ class SimulatedFlightController(BaseFlightController):
 
     async def connect(self) -> bool:
         print("[SimulatedController] Connecting...")
-        await asyncio.sleep(0.5)  # Simulate connection delay
+        await asyncio.sleep(0.5)
         self._telemetry.is_connected = True
         self._telemetry.last_heartbeat = time.time()
         print("[SimulatedController] Connected.")
@@ -162,7 +159,7 @@ class SimulatedFlightController(BaseFlightController):
 
     async def takeoff(self, altitude: float) -> bool:
         print(f"[SimulatedController] Taking off to {altitude}m...")
-        await asyncio.sleep(2.0)  # Simulate climbing
+        await asyncio.sleep(2.0)
         self._telemetry.position.z = altitude
         self._telemetry.state = "HOVERING"
         print(f"[SimulatedController] At altitude {self._telemetry.position.z}m.")
@@ -172,10 +169,7 @@ class SimulatedFlightController(BaseFlightController):
         current_pos = self._telemetry.position
         dist = current_pos.distance_to(position)
         print(f"[SimulatedController] Flying from {current_pos} to {position} ({dist:.1f}m)...")
-        
-        # Simulate flight time (10 m/s)
         await asyncio.sleep(dist / 10.0) 
-        
         self._telemetry.position = position
         self._telemetry.state = "HOVERING"
         print(f"[SimulatedController] Arrived at {position}.")
@@ -189,7 +183,7 @@ class SimulatedFlightController(BaseFlightController):
 
     async def land(self) -> bool:
         print("[SimulatedController] Landing...")
-        await asyncio.sleep(2.0)  # Simulate landing
+        await asyncio.sleep(2.0)
         self._telemetry.position.z = 0
         self._telemetry.state = "IDLE"
         print("[SimulatedController] Landed.")
@@ -198,16 +192,127 @@ class SimulatedFlightController(BaseFlightController):
     async def set_led(self, color: str):
         print(f"[SimulatedController] LED set to {color.upper()}")
         self._telemetry.led_color = color
-        await asyncio.sleep(0.01)  # Simulate hardware call
+        await asyncio.sleep(0.01)
 
     async def get_telemetry(self) -> Telemetry:
-        # Simulate battery drain
         if self._telemetry.state != "IDLE":
             self._telemetry.battery -= 0.01
+        self._telemetry.last_heartbeat = time.time()
+        return self.telemetry
+
+
+# --- NEW: MavlinkFlightController Implementation ---
+
+class MavlinkController(BaseFlightController):
+    """
+    Hardware implementation of the flight controller using MAVLink.
+    This class would wrap a library like DroneKit or PyMAVLink.
+    
+    NOTE: This is a *simulated* implementation of the real-world logic.
+    """
+    def __init__(self, connection_string: str = "udp:127.0.0.1:14550"):
+        # In a real implementation, you would initialize the connection here.
+        # e.g., from dronekit import connect
+        # self.vehicle = None
+        self.connection_string = connection_string
+        self._telemetry = Telemetry()
+        print(f"[MavlinkController] Initialized. Will connect to {connection_string}")
+
+    async def connect(self) -> bool:
+        print(f"[MavlinkController] Connecting to {self.connection_string}...")
+        # e.g., self.vehicle = connect(self.connection_string, wait_ready=True)
+        await asyncio.sleep(2.0) # Simulate connection timeout
         
-        # Simulate position drift (small noise)
-        # self._telemetry.position.x += random.uniform(-0.01, 0.01)
+        # Check if connection was successful
+        # if not self.vehicle:
+        #    print("[MavlinkController] ERROR: Connection failed.")
+        #    return False
+            
+        self._telemetry.is_connected = True
+        self._telemetry.last_heartbeat = time.time()
+        print("[MavlinkController] Vehicle connected.")
+        return True
+
+    async def disconnect(self) -> None:
+        print("[MavlinkController] Disconnecting...")
+        # e.g., self.vehicle.close()
+        await asyncio.sleep(0.1)
+        self._telemetry.is_connected = False
+        print("[MavlinkController] Disconnected.")
+
+    async def takeoff(self, altitude: float) -> bool:
+        print("[MavlinkController] Arming vehicle...")
+        # e.g., self.vehicle.mode = VehicleMode("GUIDED")
+        # e.g., self.vehicle.armed = True
+        await asyncio.sleep(1.0) # Simulate mode change and arming
+        
+        # while not self.vehicle.armed:
+        #    print("...waiting to arm")
+        #    await asyncio.sleep(0.5)
+            
+        print(f"[MavlinkController] Sending takeoff command to {altitude}m...")
+        # e.g., self.vehicle.simple_takeoff(altitude)
+        
+        # In a real implementation, you would loop until target altitude is reached
+        await asyncio.sleep(3.0) # Simulate climb
+        
+        self._telemetry.position.z = altitude
+        self._telemetry.state = "HOVERING"
+        print(f"[MavlinkController] Takeoff complete.")
+        return True
+
+    async def go_to(self, position: Position) -> bool:
+        print(f"[MavlinkController] Setting mode to GUIDED...")
+        # e.g., self.vehicle.mode = VehicleMode("GUIDED")
+        
+        print(f"[MavlinkController] Flying to {position}...")
+        # e.g., loc = LocationGlobalRelative(position.x, position.y, position.z)
+        # e.g., self.vehicle.simple_goto(loc)
+        
+        # In a real implementation, you would loop until target is reached
+        await asyncio.sleep(2.0) # Simulate flight
+        
+        self._telemetry.position = position
+        self._telemetry.state = "HOVERING"
+        print(f"[MavlinkController] Arrived at {position}.")
+        return True
+
+    async def hover(self) -> bool:
+        print("[MavlinkController] Setting mode to LOITER/HOVER...")
+        # e.g., self.vehicle.mode = VehicleMode("LOITER")
+        self._telemetry.state = "HOVERING"
+        await asyncio.sleep(0.2)
+        return True
+
+    async def land(self) -> bool:
+        print("[MavlinkController] Setting mode to LAND...")
+        # e.g., self.vehicle.mode = VehicleMode("LAND")
+        
+        # In a real implementation, you would loop until disarmed
+        await asyncio.sleep(3.0) # Simulate landing
+        
+        self._telemetry.position.z = 0
+        self._telemetry.state = "IDLE"
+        print("[MavlinkController] Landed and disarmed.")
+        return True
+
+    async def set_led(self, color: str):
+        # MAVLink doesn't have a universal LED command,
+        # this would be a custom MAVLink message or GPIO control.
+        print(f"[MavlinkController] (SIMULATED) Set LED to {color.upper()}")
+        self._telemetry.led_color = color
+        await asyncio.sleep(0.01)
+
+    async def get_telemetry(self) -> Telemetry:
+        # In a real implementation, you would read from the vehicle object
+        # e.g., pos = self.vehicle.location.global_relative_frame
+        # e.g., batt = self.vehicle.battery
+        
+        # Simulating live updates
+        if self._telemetry.state != "IDLE":
+            self._telemetry.battery -= 0.02 # Real drones use more power
         
         self._telemetry.last_heartbeat = time.time()
-        # Return a copy so the drone class can't modify the internal state
+        
+        # print("[MavlinkController] Telemetry polled.")
         return self._telemetry

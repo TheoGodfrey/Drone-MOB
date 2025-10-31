@@ -1,93 +1,126 @@
 """
-Main entry point for single-drone MOB system with dual cameras
+Main entry point for single-drone MOB system.
+(Refactored for Pydantic Configs and Async Mission)
 """
 
 import yaml
 import sys
+import asyncio 
+import traceback
 from pathlib import Path
-from core.drone import Drone
+
+# CHANGED: Import the new MavlinkController
+from core.drone import Drone, SimulatedFlightController, MavlinkController
 from core.cameras.dual_camera import DualCameraSystem
 from core.cameras.thermal.simulated import SimulatedThermalCamera
 from core.cameras.visual.simulated import SimulatedVisualCamera
 from core.logger import MissionLogger
 from core.mission import MissionController
 from strategies import get_search_strategy, get_flight_strategy
+from core.config_models import Settings
 
-def load_config(config_path: str = "config/mission_config.yaml") -> dict:
-    """Load configuration"""
+def load_config(config_path: str = "config/mission_config.yaml") -> Settings:
+    """Load and validate configuration."""
     config_file = Path(__file__).parent / config_path
-    with open(config_file, 'r') as f:
-        return yaml.safe_load(f)
+    try:
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f)
+        settings = Settings(**config_data)
+        return settings
+    except FileNotFoundError:
+        print(f"FATAL: Configuration file not found at {config_file}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"FATAL: Error validating configuration file {config_file}:\n{e}")
+        sys.exit(1)
 
-def create_cameras(config: dict) -> DualCameraSystem:
-    """Create camera system based on configuration"""
-    camera_config = config.get('cameras', {})
-    
-    # Create thermal camera
-    thermal_type = camera_config.get('thermal', {}).get('type', 'simulated')
-    if thermal_type == 'simulated':
-        thermal_res = tuple(camera_config['thermal']['resolution'])
+def create_cameras(config: Settings) -> DualCameraSystem:
+    """Create camera system based on validated configuration."""
+    thermal_cfg = config.cameras.thermal
+    if thermal_cfg.type == 'simulated':
         thermal_cam = SimulatedThermalCamera(
-            resolution=thermal_res,
-            water_temp=camera_config['thermal'].get('water_temp', 15.0),
-            ambient_temp=camera_config['thermal'].get('ambient_temp', 20.0)
+            resolution=thermal_cfg.resolution,
+            water_temp=thermal_cfg.water_temp,
+            ambient_temp=thermal_cfg.ambient_temp
         )
     else:
-        raise ValueError(f"Unknown thermal camera type: {thermal_type}")
+        # In a real implementation, you'd add OpenCVCamera(0) or similar
+        raise ValueError(f"Real thermal camera type '{thermal_cfg.type}' not implemented.")
     
-    # Create visual camera
-    visual_type = camera_config.get('visual', {}).get('type', 'simulated')
-    if visual_type == 'simulated':
-        visual_res = tuple(camera_config['visual']['resolution'])
-        visual_cam = SimulatedVisualCamera(resolution=visual_res)
+    visual_cfg = config.cameras.visual
+    if visual_cfg.type == 'simulated':
+        visual_cam = SimulatedVisualCamera(resolution=visual_cfg.resolution)
     else:
-        raise ValueError(f"Unknown visual camera type: {visual_type}")
+        # e.g., visual_cam = RealVisualCamera(visual_cfg.resolution)
+        raise ValueError(f"Real visual camera type '{visual_cfg.type}' not implemented.")
     
-    # Create dual camera system
-    recording_enabled = camera_config.get('recording', {}).get('enabled', True)
-    dual_camera = DualCameraSystem(thermal_cam, visual_cam, recording_enabled)
-    
+    recording_cfg = config.cameras.recording
+    dual_camera = DualCameraSystem(
+        thermal_cam, 
+        visual_cam, 
+        recording_cfg.enabled
+    )
     return dual_camera
 
-def main():
-    """Main entry point with dual camera support"""
+async def main():
+    """Main asynchronous entry point."""
     try:
-        # Load configuration
+        # 1. Load configuration
         config = load_config()
         
-        # Get drone configuration
-        drone_config = config['drones'][0]
-        drone_type = drone_config.get('type', 'simulated')
-        drone_id = drone_config.get('id', 'drone_1')
-        is_simulated = drone_type == 'simulated'
+        # 2. Get drone configuration
+        drone_config = config.drones[0]
         
-        # Create components
-        drone = Drone(is_simulated, drone_id=drone_id)
-        drone.dual_camera = create_cameras(config)
+        # 3. Create components
+        # --- NEW: Select controller based on config ---
+        if drone_config.type == 'simulated':
+            controller = SimulatedFlightController()
+            print("Using SIMULATED Flight Controller")
+        elif drone_config.type == 'real':
+            # This would connect to a real drone or a SITL instance
+            controller = MavlinkController(connection_string="udp:127.0.0.1:14550")
+            print("Using REAL (Mavlink) Flight Controller")
+        else:
+            raise ValueError(f"Unknown drone type in config: '{drone_config.type}'")
+            
+        drone = Drone(controller, drone_id=drone_config.id)
         
-        search_strategy = get_search_strategy(config['strategies']['search']['algorithm'])
-        flight_strategy = get_flight_strategy(config['strategies']['flight']['algorithm'])
+        dual_camera = create_cameras(config) 
         
-        logger = MissionLogger()
+        search_strategy = get_search_strategy(
+            config.strategies.search.algorithm,
+            config.vertical_ascent
+        )
+        flight_strategy = get_flight_strategy(
+            config.strategies.flight.algorithm,
+            config.precision_hover
+        )
         
-        # Create mission controller
+        logger = MissionLogger(log_dir=config.logging.log_dir)
+        
+        # 4. Create mission controller
         mission = MissionController(
             drone=drone,
+            dual_camera=dual_camera,
             search_strategy=search_strategy,
             flight_strategy=flight_strategy,
             config=config,
             logger=logger
         )
         
-        # Execute mission
-        input("Press ENTER to start mission (Ctrl+C to abort)...")
-        mission.execute()
+        # 5. Execute mission
+        print("Press ENTER to start mission (Ctrl+C to abort)...")
+        # input() # Uncomment this to wait for user input
+        
+        await mission.run()
         
     except Exception as e:
         print(f"Fatal error: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nMission aborted by user.")
