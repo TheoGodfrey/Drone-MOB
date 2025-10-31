@@ -1,6 +1,6 @@
 """
-Asynchronous, event-driven mission controller.
-(Refactored for GCS integration and safety decorators)
+Asynchronous, event-driven, MQTT-controlled mission controller.
+(Refactored for Fleet Operations & Operational Modes)
 """
 
 import asyncio
@@ -13,94 +13,84 @@ from .config_models import Settings
 from .behaviors import SearchBehavior, DeliveryBehavior
 from .cameras.dual_camera import DualCameraSystem 
 from .telemetry_logger import TelemetryLogger
-from .gcs_server import GcsServer # NEW
+from .comms import MqttClient
 
 class MissionController:
     """
-    Asynchronous mission controller.
+    Asynchronous mission controller for a *single* drone.
     This class *is* the model for the state machine.
+    It now listens for commands from the Coordinator via MQTT.
     """
     
     def __init__(self, 
                  drone: Drone, 
-                 dual_camera: DualCameraSystem,
-                 search_strategy, 
-                 flight_strategy, 
+                 dual_camera: DualCameraSystem | None,
+                 search_strategies: dict, # NEW: Pass in all strategies
+                 flight_strategies: dict, # NEW: Pass in all strategies
                  config: Settings,
-                 logger: MissionLogger):
+                 logger: MissionLogger,
+                 mqtt_client: MqttClient):
         
         self.drone = drone
         self.dual_camera = dual_camera
-        self.search_strategy = search_strategy
-        self.flight_strategy = flight_strategy
+        self.search_strategies = search_strategies # NEW
+        self.flight_strategies = flight_strategies # NEW
         self.config = config
         self.logger = logger
-        self.target = None # This will be set by the search behavior
+        self.mqtt = mqtt_client
+        self.target = None
+        self.target_position = None # For payload/overwatch/standby
+        self.current_mission_type = "IDLE" # For state machine conditions
         
-        self.telemetry_logger = TelemetryLogger(
-            log_dir=config.logging.log_dir + "/telemetry"
-        )
+        self.telemetry_logger = None 
+        self.search_behavior = None
+        self.delivery_behavior = None
+
+        if self.dual_camera:
+            self.telemetry_logger = TelemetryLogger(
+                log_dir=config.logging.log_dir + "/telemetry"
+            )
+            # Create a SearchBehavior, but it needs strategies injected
+            self.search_behavior = SearchBehavior(
+                drone=drone,
+                dual_camera=self.dual_camera,
+                search_strategy=None, # Will be set by the mission
+                flight_strategy=flight_strategies['direct'], # Default
+                config=config
+            )
         
-        # NEW: Instantiate the GCS Server
-        self.gcs_server = GcsServer(config.gcs, self)
-        
-        self.search_behavior = SearchBehavior(
-            drone=drone,
-            dual_camera=self.dual_camera,
-            search_strategy=search_strategy,
-            flight_strategy=flight_strategy,
-            config=config # Pass full config
-        )
-        # HACK: Pass config to delivery behavior (needs a cleaner way)
         self.delivery_behavior = DeliveryBehavior(
             drone=drone,
-            flight_strategy=flight_strategy
+            flight_strategy=flight_strategies['precision_hover'] # Default
         )
-        self.delivery_behavior.drone.config = config # Attach config to drone for access
-
-        self.state_machine = MissionStateMachine(self)
+        
+        self.state_machine = MissionStateMachine(self, mqtt_client)
         
         self.logger.log(f"Initialized mission for {drone.id}", "info")
-        self.logger.log(f"Using search strategy: {config.strategies.search.algorithm}", "info")
-        self.logger.log(f"Using flight strategy: {config.strategies.flight.algorithm}", "info")
+        self.logger.log(f"Role: {self._get_role()}")
+
+    def _get_role(self):
+        for d in self.config.drones:
+            if d.id == self.drone.id:
+                return d.role
+        return "unknown"
 
     async def run(self) -> None:
         """
         Execute the main asynchronous mission loop.
         """
-        # NEW: Run the GCS server as a concurrent task
-        gcs_task = asyncio.create_task(self.gcs_server.run())
-        
         try:
-            self.logger.log("Starting mission", "info")
-            await self.start_mission() 
+            command_topic = f"drone/command/{self.drone.id}"
+            await self.mqtt.subscribe(command_topic)
+            self.logger.log(f"Listening for commands on {command_topic}", "info")
             
-            while self.state not in [MissionPhase.COMPLETED, MissionPhase.EMERGENCY]:
-                
-                if self.state not in [MissionPhase.IDLE, MissionPhase.PREFLIGHT]:
-                    await self.drone.update_telemetry()
-                
-                    if not self.drone.is_healthy():
-                        self.logger.log("Drone unhealthy, transitioning to EMERGENCY.", "error")
-                        await self.trigger_emergency(event=None)
-                        continue
-                        
-                    # Broadcast telemetry to GCS
-                    await self.gcs_server.broadcast_telemetry(self.drone, self.state.value)
-                    
-                    # Log to file
-                    await self.telemetry_logger.log_snapshot(
-                        mission_state=self.state.value,
-                        drone=self.drone,
-                        detections=self.search_behavior.get_last_detections()
-                    )
-                
-                await asyncio.sleep(1.0) # Main loop interval
-            
-            self.logger.log(f"Mission loop finished with state: {self.state.value}", "info")
+            await asyncio.gather(
+                self._command_listener(),
+                self._health_monitor()
+            )
 
         except (KeyboardInterrupt, asyncio.CancelledError):
-            self.logger.log("Mission interrupted by user", "warning")
+            self.logger.log("Mission interrupted by user/system", "warning")
             await self.trigger_emergency(event=None)
         except Exception as e:
             self.logger.log(f"Fatal mission error: {e}", "error")
@@ -108,35 +98,142 @@ class MissionController:
             await self.trigger_emergency(event=None)
         finally:
             self.logger.log("Cleaning up resources...", "info")
-            gcs_task.cancel() # Stop the GCS server
-            self.telemetry_logger.close()
-            await self.drone.disconnect()
-            await self.dual_camera.disconnect()
+            if self.telemetry_logger:
+                self.telemetry_logger.close()
+            
+            if self.drone.telemetry.is_connected:
+                await self.drone.disconnect()
+            
+            if self.dual_camera and self.dual_camera.connected:
+                await self.dual_camera.disconnect()
+            
             self.logger.log("Cleanup complete.", "info")
-
-    # --- NEW: Public methods for GCS to call ---
     
-    async def operator_confirm_target(self):
-        """Called by GcsServer when operator confirms target."""
-        if self.state == MissionPhase.TARGET_PENDING_CONFIRMATION:
-            await self.operator_confirm_target() # This is the state machine trigger
-        
-    async def operator_reject_target(self):
-        """Called by GcsServer when operator rejects target."""
-        if self.state == MissionPhase.TARGET_PENDING_CONFIRMATION:
-            self.target = None # Clear the rejected target
-            await self.operator_reject_target() # This is the state machine trigger
+    async def _command_listener(self):
+        """Main loop that waits for commands from the Coordinator."""
+        async for topic, payload in self.mqtt.listen():
+            if not topic.startswith(f"drone/command/{self.drone.id}"):
+                continue
 
-    # --- State Machine Callbacks ---
+            command = payload.get("command")
+            self.logger.log(f"Received command: {command}", "info")
+            
+            # Save target position if provided
+            if "position" in payload and payload["position"] is not None:
+                self.target_position = Position(**payload["position"])
+            
+            # --- Command Handling ---
+            
+            if command == "START_MISSION":
+                mission_type = payload.get("type")
+                if self.state == MissionPhase.IDLE:
+                    if mission_type == "MOB_SEARCH":
+                        self.current_mission_type = "MOB_SEARCH"
+                        # Set the correct search strategy
+                        self.search_behavior.search_strategy = self.search_strategies[
+                            self.config.strategies.search.algorithm
+                        ]
+                        await self.start_mission()
+                    else:
+                        self.logger.log(f"Unknown START_MISSION type: {mission_type}", "warning")
+
+            elif command == "START_PATROL":
+                if self.state == MissionPhase.IDLE:
+                    self.current_mission_type = "PATROL"
+                    self.search_behavior.search_strategy = self.search_strategies['lawnmower']
+                    await self.start_patrol_mission()
+
+            elif command == "START_OVERWATCH":
+                if self.state in [MissionPhase.IDLE, MissionPhase.PATROLLING, MissionPhase.STANDBY]:
+                    self.current_mission_type = "OVERWATCH"
+                    await self.start_overwatch_mission()
+
+            elif command == "LAUNCH_AND_STANDBY":
+                if self.state == MissionPhase.IDLE:
+                    self.current_mission_type = "STANDBY"
+                    await self.start_standby_mission()
+            
+            elif command == "START_DELIVERY_MISSION":
+                 if self.state in [MissionPhase.IDLE, MissionPhase.STANDBY]:
+                    self.current_mission_type = "PAYLOAD_DELIVERY"
+                    await self.start_delivery_mission()
+
+            elif command == "OPERATOR_CONFIRM_TARGET":
+                if self.state == MissionPhase.TARGET_PENDING_CONFIRMATION:
+                    await self.confirm_target()
+            
+            elif command == "OPERATOR_REJECT_TARGET":
+                if self.state == MissionPhase.TARGET_PENDING_CONFIRMATION:
+                    await self.reject_target()
+            
+            elif command == "RETURN_TO_HOME":
+                if self.state not in [MissionPhase.EMERGENCY, MissionPhase.LANDING]:
+                    self.logger.log("Operator commanded Return-to-Home.", "info")
+                    # TODO: Add a specific "operator_rtl" trigger
+                    await self.search_complete_negative() # This trigger works
+            
+    async def _health_monitor(self):
+        """Periodic loop to update telemetry and check health."""
+        while True:
+            try:
+                if self.state not in [MissionPhase.IDLE, MissionPhase.PREFLIGHT]:
+                    await self.drone.update_telemetry()
+                    
+                    # --- Local Operator Takeover Logic ---
+                    # Check the drone's *actual* flight mode from its telemetry
+                    is_manual = self.drone.telemetry.state == "MANUAL"
+                    is_in_local_control = self.state == MissionPhase.LOCAL_OPERATOR_CONTROL
+                    
+                    if is_manual and not is_in_local_control:
+                        # Operator has taken control via RC
+                        self.logger.log("!!! Local Operator Takeover Detected !!!", "warning")
+                        await self.local_operator_takeover()
+                    elif not is_manual and is_in_local_control:
+                        # Operator has given back control
+                        self.logger.log("Local Operator has released control.", "info")
+                        await self.local_operator_release()
+                    
+                    if not self.drone.is_healthy():
+                        self.logger.log("Drone unhealthy, transitioning to EMERGENCY.", "error")
+                        await self.trigger_emergency(event=None)
+                        continue
+                        
+                    # Publish telemetry
+                    await self.mqtt.publish(
+                        f"fleet/telemetry/{self.drone.id}",
+                        self.drone.telemetry.model_dump()
+                    )
+
+                    if self.telemetry_logger:
+                        await self.telemetry_logger.log_snapshot(
+                            mission_state=self.state.value,
+                            drone=self.drone,
+                            detections=self.search_behavior.get_last_detections() if self.search_behavior else []
+                        )
+                
+                await asyncio.sleep(1.0) # Health check / Telemetry publish interval
+            
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.log(f"Error in health monitor: {e}", "error")
+                await self.trigger_emergency(event=None)
+
+
+    # --- State Machine Callbacks (Updated for new modes) ---
 
     async def _run_preflight(self, event):
-        self.logger.log(f"Entering PREFLIGHT state from {event.source.value}", "info")
+        self.logger.log(f"Entering PREFLIGHT state for {self.current_mission_type}", "info")
         try:
-            results = await asyncio.gather(
-                self.drone.connect(),
-                self.dual_camera.connect(),
-            )
-            if not all(results): raise Exception("Drone or Camera failed to connect.")
+            if not await self.drone.connect():
+                 raise Exception("Drone failed to connect.")
+            
+            # Only connect cameras if this role needs them
+            role = self._get_role()
+            if role in ["scout", "utility"]:
+                if not self.dual_camera or not await self.dual_camera.connect():
+                    raise Exception("Camera system failed to connect.")
+
             await self.drone.update_telemetry()
             if self.drone.telemetry.battery < self.config.health.min_battery_preflight:
                 raise Exception(f"{self.drone.id} - Low battery")
@@ -148,32 +245,42 @@ class MissionController:
             await self.trigger_emergency(event=event)
 
     async def _run_takeoff(self, event):
-        self.logger.log(f"Entering TAKEOFF state from {event.source.value}", "info")
+        self.logger.log(f"Entering TAKEOFF state", "info")
         try:
-            takeoff_alt = self.config.strategies.search.area.z + 15.0
-            if not await self.drone.takeoff(takeoff_alt):
+            # Determine takeoff altitude based on mission
+            if self.current_mission_type == "PATROL":
+                alt = self.config.lawnmower.patrol_altitude
+            elif self.current_mission_type == "OVERWATCH":
+                alt = self.target_position.z + self.config.orbit.altitude_offset
+            elif self.current_mission_type == "STANDBY":
+                alt = self.target_position.z
+            else: # MOB_SEARCH
+                alt = self.config.strategies.search.area.z + 15.0
+            
+            if not await self.drone.takeoff(alt):
                 raise Exception("Takeoff command failed.")
-            self.logger.log(f"Takeoff complete to {takeoff_alt}m", "info")
+            self.logger.log(f"Takeoff complete to {alt}m", "info")
             await self.takeoff_success()
         except Exception as e:
             self.logger.log(f"Takeoff failed: {e}", "error")
             await self.trigger_emergency(event=event)
 
     async def _run_search_step(self, event):
-        self.logger.log(f"Entering SEARCHING state from {event.source.value}", "info")
-        
+        self.logger.log(f"Entering SEARCHING state", "info")
+        if not self.search_behavior:
+            self.logger.log("Error: Cannot enter SEARCHING", "error")
+            await self.trigger_emergency(event=event)
+            return
+
         while self.state == MissionPhase.SEARCHING:
             try:
-                # Health is checked in the main run loop
                 should_continue, detection = await self.search_behavior.search_step()
                 
                 if detection:
-                    self.target = detection # Store target for confirmation
-                    self.logger.log(f"Target sighted at {detection.position_world}", "info")
-                    await self.target_sighted() # Trigger PENDING_CONFIRMATION
+                    self.target = detection
+                    await self.target_sighted()
                     break
                 elif not should_continue:
-                    self.logger.log("Search complete, no target found.", "warning")
                     await self.search_complete_negative()
                     break
                 
@@ -184,40 +291,123 @@ class MissionController:
                 await self.trigger_emergency(event=event)
                 break
     
-    # NEW GCS CALLBACK
-    async def _run_pending_confirmation(self, event):
-        """Awaiting operator confirmation."""
-        self.logger.log(f"Entering PENDING_CONFIRMATION from {event.source.value}", "info")
-        if not self.target:
-            self.logger.log("ERROR: Entered pending state with no target.", "error")
-            await self.operator_reject_target() # Auto-reject
-            return
+    # --- NEW: Patrol Mode Callback ---
+    async def _run_patrol(self, event):
+        self.logger.log(f"Entering PATROLLING state", "info")
+        self.search_behavior.search_strategy.current_leg = 0 # Reset strategy
+        
+        while self.state == MissionPhase.PATROLLING:
+            try:
+                # 1. Check battery
+                if self.drone.telemetry.battery < self.config.health.min_battery_patrol_rtl:
+                    self.logger.log("Patrol battery low. Returning to home.", "warning")
+                    await self.patrol_battery_low()
+                    break
 
-        # Send the event to the GCS
-        target_data = {
-            "source": self.target.source,
-            "confidence": self.target.confidence,
-            "position": {
-                "x": self.target.position_world.x,
-                "y": self.target.position_world.y,
-            },
-            # TODO: Add a Base64-encoded image snapshot
-            "target_image": "iVBOR...[base64_image_data]...RK5CYII=" 
-        }
-        await self.gcs_server.broadcast_event('PENDING_CONFIRMATION', target_data)
+                # 2. Get next patrol point
+                next_pos = self.search_behavior.search_strategy.get_next_position(self.drone, self.config.strategies.search.area, self.config.strategies.search.size)
+                
+                if next_pos is None:
+                    self.logger.log("Patrol pattern complete. Returning to home.", "info")
+                    await self.patrol_complete()
+                    break
+                
+                # 3. Fly to point
+                self.logger.log(f"Patrolling to {next_pos}", "debug")
+                await self.drone.go_to(next_pos)
+                
+                # 4. Scan (optional, could also just record)
+                # dual_frame = await self.dual_camera.capture_synchronized()
+                # detections = await self.detector.detect(dual_frame)
+                
+                await asyncio.sleep(1.0) # Pause at point
 
-    async def _run_delivery(self, event):
-        self.logger.log(f"Entering DELIVERING state from {event.source.value}", "info")
+            except Exception as e:
+                self.logger.log(f"Error during patrol: {e}", "error")
+                await self.trigger_emergency(event=event)
+                break
+
+    # --- NEW: Overwatch Mode Callback ---
+    async def _run_overwatch(self, event):
+        self.logger.log(f"Entering OVERWATCH state at {self.target_position}", "info")
+        orbit_strategy = self.flight_strategies['orbit']
+        
+        while self.state == MissionPhase.OVERWATCH:
+            try:
+                # 1. Check battery
+                if self.drone.telemetry.battery < self.config.health.min_battery_emergency:
+                    self.logger.log("Overwatch battery low. Returning to home.", "warning")
+                    await self.overwatch_complete()
+                    break
+                
+                # 2. Get next orbit point
+                next_pos = orbit_strategy.get_next_position(self.drone, self.target_position)
+                
+                self.logger.log(f"Orbiting to {next_pos}", "debug")
+                await self.drone.go_to(next_pos)
+                
+                # 3. Stream/Scan
+                # (Stream is handled by GCS server, just need to be flying)
+                
+                await asyncio.sleep(1.0) # Time between orbit waypoints
+
+            except Exception as e:
+                self.logger.log(f"Error during overwatch: {e}", "error")
+                await self.trigger_emergency(event=event)
+                break
+    
+    # --- NEW: Local Operator Mode Callbacks ---
+    async def _run_local_operator_takeover(self, event):
+        self.logger.log(f"!!! LOCAL OPERATOR CONTROL ACTIVE (from {event.source.value}) !!!", "warning")
+        # The main health loop will stop autonomous triggers.
+        # We just need to be in this state.
+    
+    async def _run_local_operator_release(self, event):
+        self.logger.log("!!! Local Operator control released. Returning to home.", "info")
+        # The state machine automatically transitions to RETURNING.
+
+    async def _request_operator_confirmation(self, event):
+        self.logger.log("Target sighted. Requesting operator confirmation...", "info")
+        await self.mqtt.publish(f"fleet/event/{self.drone.id}", {
+            "type": "PENDING_CONFIRMATION",
+            "data": { "drone_id": self.drone.id, "position": self.target.position_world.model_dump(), "confidence": self.target.confidence }
+        })
+        
+    async def _handle_rejection(self, event):
+        self.logger.log("Operator rejected target. Resuming search.", "warning")
+        self.target = None
+        
+    async def _request_delivery(self, event):
+        self.logger.log("Target confirmed. Requesting payload drone delivery.", "info")
+        await self.mqtt.publish(f"fleet/event/{self.drone.id}", {
+            "type": "TARGET_DELIVERY_REQUEST",
+            }
+        )
+        await self.delivery_request_sent()
+
+    async def _run_payload_delivery(self, event):
+        self.logger.log(f"Entering DELIVERING state", "info")
         try:
-            if not self.target: raise Exception("Delivery called with no target.")
-            self.logger.log(f"Delivering payload to {self.target.position_world}", "info")
-            await self.delivery_behavior.deliver_to(self.target.position_world)
+            if not self.target_position: raise Exception("Delivery mission started with no target_position.")
+            self.logger.log(f"Delivering payload to {self.target_position}", "info")
+            await self.delivery_behavior.deliver_to(self.target_position)
             self.logger.log("Payload delivered", "info")
-            self.target = None # Clear target after delivery
             await self.delivery_complete()
         except Exception as e:
             self.logger.log(f"Delivery failed: {e}", "error")
             await self.trigger_emergency(event=event)
+            
+    async def _run_standby(self, event):
+        self.logger.log(f"Entering STANDBY state", "info")
+        try:
+            if not self.target_position: raise Exception("Standby mission started with no target_position.")
+            self.logger.log(f"Flying to standby position: {self.target_position}", "info")
+            await self.drone.go_to(self.target_position)
+            self.logger.log("At standby. Awaiting delivery command.", "info")
+        except Exception as e:
+            self.logger.log(f"Standby failed: {e}", "error")
+            await self.trigger_emergency(event=event)
+
 
     async def _run_return_to_home(self, event):
         self.logger.log(f"Entering RETURNING state from {event.source.value}", "info")
@@ -225,7 +415,7 @@ class MissionController:
             await self.drone.set_led("red")
             home_pos_safe = Position(0, 0, self.drone.telemetry.position.z)
             await self.drone.go_to(home_pos_safe)
-            landing_approach = Position(0, 0, self.config.precision_hover.altitude_offset + 3.0)
+            landing_approach = Position(0, 0, 5)
             await self.drone.go_to(landing_approach)
             await self.drone.set_led("off")
             self.logger.log("Arrived at home landing approach.", "info")
@@ -235,7 +425,7 @@ class MissionController:
             await self.trigger_emergency(event=event)
 
     async def _run_land(self, event):
-        self.logger.log(f"Entering LANDING state from {event.source.value}", "info")
+        self.logger.log(f"Entering LANDING state", "info")
         try:
             await self.drone.land()
             self.logger.log("Landed successfully", "info")
@@ -245,23 +435,24 @@ class MissionController:
             await self.trigger_emergency(event=event)
 
     async def _run_emergency_land(self, event):
-        if event:
-             self.logger.log(f"Entering EMERGENCY state from {event.source.value}", "error")
-        else:
-             self.logger.log(f"Entering EMERGENCY state from external trigger", "error")
+        if event: self.logger.log(f"Entering EMERGENCY state from {event.source.value}", "error")
+        else: self.logger.log(f"Entering EMERGENCY state from external trigger", "error")
         if self.drone.telemetry.is_connected:
             await self.drone.land()
             self.logger.log("Emergency land complete.", "error")
     
     async def _log_mission_summary(self, event):
         self.logger.log(f"Entering COMPLETED state from {event.source.value}", "info")
-        iterations = self.search_behavior.iteration
+        iterations = 0
+        if self.search_behavior: iterations = self.search_behavior.iteration
+        
         summary_data = {
-            "Drone ID": self.drone.id,
-            "Search strategy": self.config.strategies.search.algorithm,
-            "Flight strategy": self.config.strategies.flight.algorithm,
+            "Drone ID": self.drone.id, "Role": self._get_role(),
             "Search iterations": iterations,
-            "Target found": "Yes" if self.target else "No", # Note: self.target is cleared on reject/deliver
+            "Target found": "Yes" if self.target else "No",
+            "Target position": str(self.target.position_world) if self.target else "N/A",
             "Final battery": f"{self.drone.telemetry.battery:.1f}%",
         }
         self.logger.log_summary(summary_data)
+
+
