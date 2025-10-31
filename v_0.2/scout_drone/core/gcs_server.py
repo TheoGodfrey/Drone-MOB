@@ -9,6 +9,7 @@ import json
 import websockets
 from typing import Set
 from .config_models import GcsConfig
+from .drone import Telemetry, Drone
 
 # Forward declaration for type hinting
 class MissionController:
