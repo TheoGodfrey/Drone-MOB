@@ -1,141 +1,110 @@
 """
-Sensor fusion detector - combines thermal + visual for high confidence
+Sensor fusion detector - combines thermal + visual over time with a Kalman Tracker.
 """
+import asyncio
+import time
+import numpy as np
 from typing import List, Tuple, Optional
 from ..cameras.base import Detection
 from ..cameras.dual_camera import DualFrame
 from .thermal_detector import ThermalDetector
 from .visual_detector import VisualDetector
+from .tracker import KalmanTracker # NEW
+from ..config_models import DetectionConfig
 
 class FusionDetector:
-    """Fuses thermal and visual detections for high-confidence MOB detection"""
+    """Fuses thermal and visual detections over time using a Kalman Tracker."""
     
-    def __init__(self, config: dict):
+    def __init__(self, config: DetectionConfig):
         """
         Initialize fusion detector
-        
-        Config parameters:
-            - thermal_weight: Weight for thermal detection (default: 0.7)
-            - visual_weight: Weight for visual confirmation (default: 0.3)
-            - fusion_threshold: Min confidence for fusion detection (default: 0.75)
-            - max_position_error: Max pixel distance to associate detections (default: 50)
         """
-        self.thermal_detector = ThermalDetector(config.get('thermal', {}))
-        self.visual_detector = VisualDetector(config.get('visual', {}))
+        self.thermal_detector = ThermalDetector(config.thermal)
+        self.visual_detector = VisualDetector(config.visual)
         
-        self.thermal_weight = config.get('thermal_weight', 0.7)
-        self.visual_weight = config.get('visual_weight', 0.3)
-        self.fusion_threshold = config.get('fusion_threshold', 0.75)
-        self.max_position_error = config.get('max_position_error', 50)
+        self.config = config.fusion
         
-        self.detection_history = []
-        self.max_history = 10
-    
-    def detect(self, dual_frame: DualFrame) -> List[Detection]:
+        # NEW: List to hold active KalmanTracker instances
+        self.tracks: List[KalmanTracker] = []
+        self.last_update_time = time.time()
+        
+        # Tracker parameters
+        self.max_age = 10 # Max frames to keep a track without a new detection
+        self.min_hits_to_confirm = 3 # Min hits to be a "confirmed" target
+        self.association_threshold = config.fusion.max_position_error # Pixels
+
+    async def detect(self, dual_frame: DualFrame) -> List[Detection]:
         """
-        Perform sensor fusion detection
+        Perform sensor fusion detection and tracking.
         
-        Returns detections that are confirmed by BOTH sensors
+        Returns a list of stable, tracked detections.
         """
-        # Get detections from both sensors
-        thermal_detections = self.thermal_detector.detect(dual_frame.thermal)
-        visual_detections = self.visual_detector.detect(dual_frame.visual)
-        
-        # Fuse detections
-        fused_detections = self._fuse_detections(
-            thermal_detections,
-            visual_detections,
-            dual_frame
+        # 1. Get new detections from both sensors concurrently
+        thermal_detections, visual_detections = await asyncio.gather(
+            self.thermal_detector.detect(dual_frame.thermal),
+            self.visual_detector.detect(dual_frame.visual)
         )
+        all_detections = thermal_detections + visual_detections
         
-        # Track detection history for temporal filtering
-        self.detection_history.append(len(fused_detections) > 0)
-        if len(self.detection_history) > self.max_history:
-            self.detection_history.pop(0)
+        # 2. Update the tracker with the new detections
+        self._update_tracks(all_detections)
         
-        return fused_detections
-    
-    def _fuse_detections(
-        self,
-        thermal_detections: List[Detection],
-        visual_detections: List[Detection],
-        dual_frame: DualFrame
-    ) -> List[Detection]:
-        """Fuse thermal and visual detections"""
-        
-        fused = []
-        
-        # For each thermal detection, look for visual confirmation
-        for thermal_det in thermal_detections:
-            # Find closest visual detection
-            visual_match, distance = self._find_closest_detection(
-                thermal_det,
-                visual_detections
-            )
-            
-            if visual_match and distance < self.max_position_error:
-                # Calculate fused confidence
-                fused_confidence = (
-                    self.thermal_weight * thermal_det.confidence +
-                    self.visual_weight * visual_match.confidence
-                )
+        # 3. Return confirmed tracks
+        confirmed_detections = []
+        for track in self.tracks:
+            if track.hits >= self.min_hits_to_confirm:
+                confirmed_detections.append(track.get_detection())
                 
-                # Only accept if above fusion threshold
-                if fused_confidence >= self.fusion_threshold:
-                    # Create fused detection
-                    fused_detection = Detection(
-                        position_image=thermal_det.position_image,
-                        position_world=thermal_det.position_world,
-                        confidence=fused_confidence,
-                        is_person=True,  # Both confirmed
-                        source='fusion',
-                        metadata={
-                            'thermal_confidence': thermal_det.confidence,
-                            'visual_confidence': visual_match.confidence,
-                            'position_error_pixels': distance,
-                            'thermal_temp': thermal_det.metadata.get('temperature', 0),
-                            'has_visual_confirmation': True
-                        }
-                    )
-                    fused.append(fused_detection)
-            else:
-                # Thermal detection without visual confirmation
-                # Lower confidence, but still report if thermal is very confident
-                if thermal_det.confidence > 0.85:
-                    thermal_det.metadata['has_visual_confirmation'] = False
-                    thermal_det.confidence *= 0.8  # Reduce confidence
-                    fused.append(thermal_det)
+        return confirmed_detections
+
+    def _update_tracks(self, detections: List[Detection]):
+        """
+        Update all active tracks with the new list of detections.
+        This implements a simple association and tracking logic.
+        """
+        dt = time.time() - self.last_update_time
+        self.last_update_time = time.time()
         
-        return fused
-    
-    def _find_closest_detection(
-        self,
-        thermal_det: Detection,
-        visual_detections: List[Detection]
-    ) -> Tuple[Optional[Detection], float]:
-        """Find the closest visual detection to thermal detection"""
-        
-        if not visual_detections:
-            return None, float('inf')
-        
-        tx, ty = thermal_det.position_image
-        
-        closest = None
-        min_distance = float('inf')
-        
-        for visual_det in visual_detections:
-            vx, vy = visual_det.position_image
-            distance = ((tx - vx)**2 + (ty - vy)**2) ** 0.5
+        # 1. Predict new state for all existing tracks
+        for track in self.tracks:
+            track.predict(dt)
             
-            if distance < min_distance:
-                min_distance = distance
-                closest = visual_det
+        # 2. Associate new detections with existing tracks
+        # (Using a simple greedy algorithm + distance threshold)
+        matched_track_indices = set()
+        matched_det_indices = set()
         
-        return closest, min_distance
-    
-    def get_detection_stability(self) -> float:
-        """Get detection stability (0.0-1.0) based on history"""
-        if not self.detection_history:
-            return 0.0
-        
-        return sum(self.detection_history) / len(self.detection_history)
+        for t_idx, track in enumerate(self.tracks):
+            track_pos = track.get_pos()
+            best_dist = float('inf')
+            best_det_idx = -1
+            
+            for d_idx, det in enumerate(detections):
+                if d_idx in matched_det_indices:
+                    continue # This detection is already matched
+                
+                dist = np.linalg.norm(np.array(track_pos) - np.array(det.position_image))
+                
+                if dist < self.association_threshold and dist < best_dist:
+                    best_dist = dist
+                    best_det_idx = d_idx
+            
+            # If we found a match, update the track
+            if best_det_idx != -1:
+                track.update(detections[best_det_idx])
+                matched_track_indices.add(t_idx)
+                matched_det_indices.add(best_det_idx)
+
+        # 3. Create new tracks for unmatched detections
+        for d_idx, det in enumerate(detections):
+            if d_idx not in matched_det_indices:
+                # Only create new tracks for high-confidence detections
+                if det.confidence > self.config.fusion_threshold:
+                    new_track = KalmanTracker(det)
+                    self.tracks.append(new_track)
+
+        # 4. Prune stale tracks (unmatched and too old)
+        self.tracks = [
+            t for t_idx, t in enumerate(self.tracks)
+            if t_idx in matched_track_indices or t.age < self.max_age
+        ]
