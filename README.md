@@ -135,13 +135,13 @@ scout_drone/
         │   └── mission_config.yaml
         ├── core/
         │   ├── __init__.py
-        │   ├── position.py          # NEW
-        │   ├── drone.py              # UPDATED
+        │   ├── position.py          
+        │   ├── drone.py              
         │   ├── camera.py
-        │   ├── state_machine.py      # NEW
-        │   ├── behaviors.py          # NEW
+        │   ├── state_machine.py      
+        │   ├── behaviors.py          
         │   ├── logger.py
-        │   └── mission.py            # UPDATED
+        │   └── mission.py            
         ├── strategies/
         │   ├── __init__.py
         │   ├── base.py
@@ -151,4 +151,4 @@ scout_drone/
         │   └── search/
         │       ├── __init__.py
         │       └── random.py
-        └── main.py                   # UPDATED
+        └── main.py                   

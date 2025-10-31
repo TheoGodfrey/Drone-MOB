@@ -7,7 +7,7 @@ from core.position import Position
 class VerticalAscentSearchStrategy:
     """Vertical ascent search - climb vertically while scanning"""
     
-    def __init__(self, max_altitude: float = 150.0, step_size: float = 5.0):
+    def __init__(self, max_altitude: float = 120.0, step_size: float = 5.0):
         self.name = "vertical_ascent"
         self.description = "Climb vertically while scanning"
         self.max_altitude = max_altitude
@@ -38,4 +38,4 @@ class VerticalAscentSearchStrategy:
 
 # Factory function for composition
 def create_vertical_ascent_search_strategy():
-    return VerticalAscentSearchStrategy(max_altitude=150.0, step_size=5.0)
+    return VerticalAscentSearchStrategy(max_altitude=120.0, step_size=5.0)

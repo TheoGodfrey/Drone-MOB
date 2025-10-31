@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'v_0.2' / 'scout_drone'))
 
 from core.drone import Drone
 from core.position import Position
-from core.camera import Camera
+from core.cameras import 
 from core.behaviors import SearchBehavior, DeliveryBehavior
 from core.state_machine import MissionState, MissionPhase
 from strategies import get_search_strategy, get_flight_strategy
