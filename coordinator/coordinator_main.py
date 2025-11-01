@@ -2,8 +2,7 @@
 Main entry point for the Drone-MOB Coordinator.
 
 This process runs at the "docking station" and manages the entire fleet.
-It connects to the MQTT broker and starts the Coordinator, GCS Server,
-and new Media Server.
+It connects to the MQTT broker and starts the Coordinator and GCS Server.
 """
 import asyncio
 import yaml
@@ -12,8 +11,9 @@ import traceback
 from pathlib import Path
 
 # --- Robust Import Logic ---
+# This ensures that 'core' can be imported
 FILE = Path(__file__).resolve()
-ROOT = FILE.parent
+ROOT = FILE.parent.parent
 CORE_PATH = ROOT / "v_0_2" / "scout_drone"
 if str(CORE_PATH) not in sys.path:
     sys.path.append(str(CORE_PATH))
@@ -23,10 +23,10 @@ from core.config_models import Settings
 from core.comms import MqttClient
 from coordinator.coordinator import Coordinator
 from coordinator.gcs_server import GcsServer
-from coordinator.media_server import MediaServer # NEW
 
 def load_config(config_path: str = "v_0_2/scout_drone/config/mission_config.yaml") -> Settings:
-    # ... (no change from previous version)
+    """Load and validate configuration."""
+    # Use ROOT to build the correct absolute path
     config_file = ROOT / config_path
     try:
         with open(config_file, 'r') as f:
@@ -42,12 +42,12 @@ def load_config(config_path: str = "v_0_2/scout_drone/config/mission_config.yaml
 
 async def main():
     """Main asynchronous entry point for the Coordinator."""
-    mqtt_client = None
+    mqtt_client = None # Define here for finally block
     try:
         # 1. Load configuration
         config = load_config()
 
-        # 2. Create MQTT Comms Client
+        # 2. Create MQTT Comms Client for the Coordinator
         mqtt_client = MqttClient(config.mqtt, client_id="coordinator")
         await mqtt_client.connect()
         if not mqtt_client.is_connected:
@@ -56,22 +56,17 @@ async def main():
         # 3. Create GCS Server
         gcs_server = GcsServer(config.gcs)
 
-        # 4. Create Media Server (NEW)
-        # The Media Server needs to send frames to the GCS clients
-        media_server = MediaServer(gcs_server)
-
-        # 5. Create the Coordinator
-        coordinator = Coordinator(config, mqtt_client, gcs_server, media_server)
+        # 4. Create the Coordinator
+        coordinator = Coordinator(config, mqtt_client, gcs_server)
         
-        # 6. Link GCS Server back to Coordinator
+        # 5. Link GCS Server back to Coordinator (Dependency Injection)
         gcs_server.set_controller(coordinator)
 
-        # 7. Run all services concurrently
+        # 6. Run all services concurrently
         print("[CoordinatorMain] Running all services...")
         await asyncio.gather(
             coordinator.run(),
-            gcs_server.run(),
-            media_server.run() # NEW: Run the media server
+            gcs_server.run()
         )
 
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -83,8 +78,9 @@ async def main():
         if mqtt_client and mqtt_client.is_connected:
             await mqtt_client.disconnect()
         print("[CoordinatorMain] Shutdown complete.")
-        sys.exit(0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[CoordinatorMain] Shutdown complete.")

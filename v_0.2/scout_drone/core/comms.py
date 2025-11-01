@@ -108,3 +108,4 @@ class MqttClient:
             # Strip base topic to make it easier to handle
             short_topic = topic.removeprefix(f"{self.config.base_topic}/")
             yield short_topic, payload
+

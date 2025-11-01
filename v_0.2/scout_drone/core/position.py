@@ -1,8 +1,7 @@
 """Position utilities - shared across system"""
-from dataclasses import dataclass
+from pydantic import BaseModel # <-- FIX: Was dataclass
 
-@dataclass
-class Position:
+class Position(BaseModel): # <-- FIX: Was @dataclass
     """3D position (x, y, z)"""
     x: float = 0.0
     y: float = 0.0
@@ -13,3 +12,4 @@ class Position:
         return ((self.x - other.x)**2 + 
                 (self.y - other.y)**2 + 
                 (self.z - other.z)**2)**0.5
+

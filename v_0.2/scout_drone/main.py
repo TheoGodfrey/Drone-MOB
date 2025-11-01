@@ -1,13 +1,29 @@
 """
-Main entry point for single-drone MOB system.
-(Refactored for GCS, Safety Decorators, and Async)
+Main entry point for a *single* Drone-MOB client.
+
+This process runs *on the drone* (or in a simulator) and connects
+to the Coordinator via MQTT.
+
+Usage:
+    python main.py --id scout_1
+    python main.py --id payload_1
+    python main.py --id utility_1
 """
 
 import yaml
 import sys
 import asyncio 
 import traceback
+import argparse # NEW: To read --id from command line
 from pathlib import Path
+
+# --- Robust Import Logic ---
+# Add the current directory to path to ensure 'core' can be imported
+FILE = Path(__file__).resolve()
+CORE_DIR = FILE.parent
+if str(CORE_DIR) not in sys.path:
+    sys.path.append(str(CORE_DIR))
+# --- End Import Logic ---
 
 # Import all core components
 from core.drone import Drone, SimulatedFlightController, MavlinkController
@@ -16,9 +32,18 @@ from core.cameras.thermal.simulated import SimulatedThermalCamera
 from core.cameras.visual.simulated import SimulatedVisualCamera
 from core.logger import MissionLogger
 from core.mission import MissionController
-from strategies import get_search_strategy, get_flight_strategy
-from core.config_models import Settings
-from core.safety import CollisionAvoider, StubObstacleSensor # NEW
+from core.config_models import Settings, DroneConfig
+from core.safety import CollisionAvoider, StubObstacleSensor
+from core.comms import MqttClient
+
+# Import all strategies to pass to the controller
+from strategies.search.lawnmower import create_lawnmower_search_strategy
+from strategies.search.random import create_random_search_strategy
+from strategies.search.vertical_ascent import create_vertical_ascent_search_strategy
+from strategies.flight.direct import create_direct_flight_strategy
+from strategies.flight.orbit import create_orbit_flight_strategy
+from strategies.flight.precision_hover import create_precision_hover_flight_strategy
+
 
 def load_config(config_path: str = "config/mission_config.yaml") -> Settings:
     """Load and validate configuration."""
@@ -35,8 +60,14 @@ def load_config(config_path: str = "config/mission_config.yaml") -> Settings:
         print(f"FATAL: Error validating configuration file {config_file}:\n{e}")
         sys.exit(1)
 
-def create_cameras(config: Settings) -> DualCameraSystem:
+def create_cameras(config: Settings, drone_cfg: DroneConfig) -> DualCameraSystem | None:
     """Create camera system based on validated configuration."""
+    
+    # Drones without cameras (payload) should not create them
+    if drone_cfg.role == "payload":
+        print("[main] Role is 'payload', skipping camera creation.")
+        return None
+
     thermal_cfg = config.cameras.thermal
     if thermal_cfg.type == 'simulated':
         thermal_cam = SimulatedThermalCamera(
@@ -45,12 +76,14 @@ def create_cameras(config: Settings) -> DualCameraSystem:
             ambient_temp=thermal_cfg.ambient_temp
         )
     else:
+        # TODO: Add RealThermalCamera(thermal_cfg)
         raise ValueError(f"Real thermal camera type '{thermal_cfg.type}' not implemented.")
     
     visual_cfg = config.cameras.visual
     if visual_cfg.type == 'simulated':
         visual_cam = SimulatedVisualCamera(resolution=visual_cfg.resolution)
     else:
+        # TODO: Add RealVisualCamera(visual_cfg)
         raise ValueError(f"Real visual camera type '{visual_cfg.type}' not implemented.")
     
     recording_cfg = config.cameras.recording
@@ -62,77 +95,115 @@ def create_cameras(config: Settings) -> DualCameraSystem:
     return dual_camera
 
 async def main():
-    """Main asynchronous entry point."""
+    """Main asynchronous entry point for the Drone Client."""
+    
+    # --- NEW: Parse command-line arguments ---
+    parser = argparse.ArgumentParser(description="Drone-MOB Client")
+    parser.add_argument(
+        '--id', 
+        type=str, 
+        required=True, 
+        help="The unique ID of this drone (e.g., 'scout_1')"
+    )
+    args = parser.parse_args()
+    drone_id = args.id
+    # -----------------------------------------
+
+    mqtt_client = None # Define here for finally block
     try:
         # 1. Load configuration
         config = load_config()
         
-        # 2. Get drone configuration
-        drone_config = config.drones[0]
+        # --- FIX: Find this drone's specific config ---
+        drone_cfg: DroneConfig | None = None
+        for d in config.drones:
+            if d.id == drone_id:
+                drone_cfg = d
+                break
         
+        if not drone_cfg:
+            print(f"FATAL: No configuration found for drone with ID '{drone_id}' in mission_config.yaml")
+            sys.exit(1)
+        
+        print(f"[main] Starting drone '{drone_id}' with role '{drone_cfg.role}'")
+        # -----------------------------------------------
+
+        # 2. Create MQTT Comms Client
+        mqtt_client = MqttClient(config.mqtt, client_id=drone_id)
+        await mqtt_client.connect()
+        if not mqtt_client.is_connected:
+            raise ConnectionError("Failed to connect to MQTT broker.")
+
         # 3. Create components
-        # --- NEW: Apply Safety Decorator ---
-        
-        # 3a. Create the base flight controller
-        if drone_config.type == 'simulated':
+        # --- FIX: Select controller based on config ---
+        if drone_cfg.type == 'simulated':
             base_controller = SimulatedFlightController()
-            print("Using SIMULATED Flight Controller")
-        elif drone_config.type == 'real':
+            print("[main] Using SIMULATED Flight Controller")
+        elif drone_cfg.type == 'real':
+            # This would connect to a real drone or a SITL instance
+            # TODO: Get connection string from config
             base_controller = MavlinkController(connection_string="udp:127.0.0.1:14550")
-            print("Using REAL (Mavlink) Flight Controller")
+            print("[main] Using REAL (Mavlink) Flight Controller")
         else:
-            raise ValueError(f"Unknown drone type in config: '{drone_config.type}'")
+            raise ValueError(f"Unknown drone type in config: '{drone_cfg.type}'")
             
-        # 3b. Create the sensor suite for the avoider
-        # (In production, this would be a real sensor)
         obstacle_sensor = StubObstacleSensor()
-            
-        # 3c. Wrap the base controller with the safety decorator
-        safe_controller = CollisionAvoider(base_controller, obstacle_sensor)
+        safe_controller = CollisionAvoider(base_controller, obstacle_sensor, config.safety)
         
-        # 3d. Create the Drone instance with the *safe* controller
-        drone = Drone(safe_controller, drone_id=drone_config.id)
+        drone = Drone(safe_controller, drone_id=drone_id)
+        # -----------------------------------------------
         
-        # --- End of Safety Decorator ---
+        # Create cameras (or None if payload drone)
+        dual_camera = create_cameras(config, drone_cfg) 
         
-        dual_camera = create_cameras(config) 
-        
-        search_strategy = get_search_strategy(
-            config.strategies.search.algorithm,
-            config.vertical_ascent
-        )
-        flight_strategy = get_flight_strategy(
-            config.strategies.flight.algorithm,
-            config.precision_hover
-        )
-        
-        logger = MissionLogger(log_dir=config.logging.log_dir)
+        # --- FIX: Create strategy dictionaries ---
+        # Create all available strategies and pass them to the controller
+        search_strategies = {
+            "random": create_random_search_strategy(config.vertical_ascent), # TODO: Needs 'random_config'
+            "vertical_ascent": create_vertical_ascent_search_strategy(config.vertical_ascent),
+            "lawnmower": create_lawnmower_search_strategy(config.lawnmower)
+        }
+        flight_strategies = {
+            "direct": create_direct_flight_strategy(config.precision_hover), # TODO: Needs 'direct_config'
+            "precision_hover": create_precision_hover_flight_strategy(config.precision_hover),
+            "orbit": create_orbit_flight_strategy(config.orbit)
+        }
+        # -----------------------------------------
+
+        # Create logger with drone-specific log file
+        log_dir = f"{config.logging.log_dir}/{drone_id}"
+        logger = MissionLogger(log_dir=log_dir, log_to_console=True) # FIX: Enable console log
         
         # 4. Create mission controller
         mission = MissionController(
             drone=drone,
             dual_camera=dual_camera,
-            search_strategy=search_strategy,
-            flight_strategy=flight_strategy,
+            search_strategies=search_strategies, # Pass dict
+            flight_strategies=flight_strategies, # Pass dict
             config=config,
-            logger=logger
+            logger=logger,
+            mqtt_client=mqtt_client # Pass MQTT client
         )
         
         # 5. Execute mission
-        print("---")
-        print("GCS Frontend is available at 'gcs_frontend.html'")
-        print("Starting mission... (Press Ctrl+C to abort)")
+        print(f"--- [Drone Client: {drone_id}] ---")
+        print("Connecting to Coordinator... (Press Ctrl+C to abort)")
         print("---")
         
+        # This now just listens for commands
         await mission.run()
         
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(f"\n[main {drone_id}] Shutting down...")
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"[main {drone_id}] Fatal error: {e}")
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        if mqtt_client and mqtt_client.is_connected:
+            await mqtt_client.disconnect()
+        print(f"[main {drone_id}] Shutdown complete.")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nMission aborted by user.")
+    asyncio.run(main())
+

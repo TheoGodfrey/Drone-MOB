@@ -9,7 +9,7 @@ from datetime import datetime
 class MissionLogger:
     """Enhanced mission logger with timestamped log files"""
     
-    def __init__(self, log_dir: str = "logs", max_logs: int = 50):
+    def __init__(self, log_dir: str = "logs", max_logs: int = 0):
         """
         Initialize logger with log directory
         

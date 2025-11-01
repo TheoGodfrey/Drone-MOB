@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import List
-from .drone import Telemetry
+from .drone import Drone, Telemetry  # <--- CORRECTED: Added 'Drone' import
 from .cameras.base import Detection
 
 class TelemetryLogger:
@@ -47,7 +47,7 @@ class TelemetryLogger:
 
     async def log_snapshot(self, 
                            mission_state: str,
-                           drone: 'Drone', # Use drone object directly
+                           drone: 'Drone', # This type hint now resolves correctly
                            detections: List[Detection]):
         """
         Asynchronously writes a single snapshot of system state to the CSV.
