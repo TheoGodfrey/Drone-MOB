@@ -62,8 +62,10 @@ class MissionController:
         # Delivery behavior doesn't need cameras
         self.delivery_behavior = DeliveryBehavior(
             drone=drone,
-            flight_strategy=flight_strategies['precision_hover']
+            flight_strategy=flight_strategies['precision_hover'],
+            config=config.precision_hover # Pass the PrecisionHoverConfig
         )
+        # ----------------------------------------
         
         self.state_machine = MissionStateMachine(self, mqtt_client)
         
