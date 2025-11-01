@@ -6,15 +6,15 @@ import math
 from typing import Tuple
 from .position import Position
 from .drone import Telemetry
-from .config_models import CameraIntrinsicsConfig
+from .config_models import CameraIntrinsics # <-- FIX: Was CameraIntrinsicsConfig
 
-class CameraIntrinsics:
+class CameraIntrinsicsHelper: # <-- FIX: Renamed class to avoid conflict
     """A helper class to hold camera intrinsic parameters."""
-    def __init__(self, config: CameraIntrinsicsConfig):
-        self.fx = config.fx
-        self.fy = config.fy
-        self.cx = config.cx
-        self.cy = config.cy
+    def __init__(self, config: CameraIntrinsics): # <-- FIX: Was CameraIntrinsicsConfig
+        self.fx = config.focal_length_x
+        self.fy = config.focal_length_y
+        self.cx = config.principal_point_x
+        self.cy = config.principal_point_y
         self.width = config.width
         self.height = config.height
         
@@ -70,7 +70,7 @@ def _get_rotation_matrix(attitude: Attitude) -> np.ndarray:
 
 def image_to_world_position(pixel: Tuple[int, int],
                             drone_telemetry: Telemetry,
-                            intrinsics: CameraIntrinsics,
+                            intrinsics: CameraIntrinsicsHelper, # <-- FIX
                             ground_level_z: float = 0.0) -> Position:
     """
     Performs geolocation (ray-casting) to find the 3D world position
@@ -79,7 +79,7 @@ def image_to_world_position(pixel: Tuple[int, int],
     Args:
         pixel: (x, y) pixel coordinates from the image.
         drone_telemetry: The full Telemetry object at the time of capture.
-        intrinsics: The CameraIntrinsics object for the camera used.
+        intrinsics: The CameraIntrinsicsHelper object for the camera used.
         ground_level_z: The Z-coordinate of the ground (e.g., 0.0 for sea level).
         
     Returns:
@@ -143,4 +143,4 @@ def image_to_world_position(pixel: Tuple[int, int],
     # 6. Calculate Intersection Point
     P_intersect = P0 + t * V
     
-    return Position(P_intersect[0], P_intersect[1], P_intersect[2])
+    return Position(x=P_intersect[0], y=P_intersect[1], z=P_intersect[2])

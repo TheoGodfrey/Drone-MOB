@@ -1,8 +1,12 @@
 """
-Main entry point for the Drone-MOB Coordinator.
+Main entry point for the Tier 2 Comms & Charging Hub.
 
-This process runs at the "docking station" and manages the entire fleet.
-It connects to the MQTT broker and starts the Coordinator and GCS Server.
+This process runs at the "docking station"[cite: 30]. It is a
+"non-thinking component"  that enables the P2P swarm.
+
+It runs:
+1. The GcsServer (for Level 2 Local Operation) [cite: 59]
+2. The SatelliteRelay (for Tier 3 Uplink) 
 """
 import asyncio
 import yaml
@@ -11,7 +15,6 @@ import traceback
 from pathlib import Path
 
 # --- Robust Import Logic ---
-# This ensures that 'core' can be imported
 FILE = Path(__file__).resolve()
 ROOT = FILE.parent.parent
 CORE_PATH = ROOT / "v_0_2" / "scout_drone"
@@ -19,14 +22,13 @@ if str(CORE_PATH) not in sys.path:
     sys.path.append(str(CORE_PATH))
 # --- End Import Logic ---
 
-from core.config_models import Settings
-from core.comms import MqttClient
-from coordinator.coordinator import Coordinator
-from coordinator.gcs_server import GcsServer
+from drone.core.config_models import Settings
+from drone.core.comms import MqttClient
+from coordinator.hub.gcs_server import GcsServer
+from satellite_relay import SatelliteRelay
 
 def load_config(config_path: str = "v_0_2/scout_drone/config/mission_config.yaml") -> Settings:
     """Load and validate configuration."""
-    # Use ROOT to build the correct absolute path
     config_file = ROOT / config_path
     try:
         with open(config_file, 'r') as f:
@@ -41,46 +43,45 @@ def load_config(config_path: str = "v_0_2/scout_drone/config/mission_config.yaml
         sys.exit(1)
 
 async def main():
-    """Main asynchronous entry point for the Coordinator."""
-    mqtt_client = None # Define here for finally block
+    """Main asynchronous entry point for the Tier 2 Hub."""
+    mqtt_client = None
     try:
         # 1. Load configuration
         config = load_config()
 
-        # 2. Create MQTT Comms Client for the Coordinator
-        mqtt_client = MqttClient(config.mqtt, client_id="coordinator")
+        # 2. Create MQTT Comms Client for the Hub
+        # This client represents the Hub's high-gain antenna [cite: 34]
+        mqtt_client = MqttClient(config.mqtt, client_id="tier_2_hub")
         await mqtt_client.connect()
         if not mqtt_client.is_connected:
             raise ConnectionError("Failed to connect to MQTT broker.")
 
-        # 3. Create GCS Server
-        gcs_server = GcsServer(config.gcs)
+        # 3. Create GCS Server (for Level 2/3) [cite: 59, 62]
+        # We pass the MQTT client to it so it can PUBLISH events
+        gcs_server = GcsServer(config.gcs, mqtt_client) 
 
-        # 4. Create the Coordinator
-        coordinator = Coordinator(config, mqtt_client, gcs_server)
-        
-        # 5. Link GCS Server back to Coordinator (Dependency Injection)
-        gcs_server.set_controller(coordinator)
+        # 4. Create the Satellite Relay 
+        relay = SatelliteRelay(mqtt_client)
 
-        # 6. Run all services concurrently
-        print("[CoordinatorMain] Running all services...")
+        # 5. Run all services concurrently
+        print("[HubMain] Running all Tier 2 services (GCS, SatRelay)...")
         await asyncio.gather(
-            coordinator.run(),
-            gcs_server.run()
+            gcs_server.run(),
+            relay.run()
         )
 
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\n[CoordinatorMain] Shutting down...")
+        print("\n[HubMain] Shutting down...")
     except Exception as e:
-        print(f"[CoordinatorMain] Fatal error: {e}")
+        print(f"[HubMain] Fatal error: {e}")
         traceback.print_exc()
     finally:
         if mqtt_client and mqtt_client.is_connected:
             await mqtt_client.disconnect()
-        print("[CoordinatorMain] Shutdown complete.")
+        print("[HubMain] Shutdown complete.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[CoordinatorMain] Shutdown complete.")
+        print("\n[HubMain] Shutdown complete.")

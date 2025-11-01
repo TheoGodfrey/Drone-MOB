@@ -24,5 +24,7 @@ class PrecisionHoverFlightStrategy:
         )
 
 # Factory function for composition
-def create_precision_hover_flight_strategy():
-    return PrecisionHoverFlightStrategy(hover_altitude_offset=2.0)
+def create_precision_hover_flight_strategy(config): # <-- FIX: Added config
+    # Use config if provided, otherwise default
+    offset = config.altitude_offset if config else 2.0
+    return PrecisionHoverFlightStrategy(hover_altitude_offset=offset)

@@ -9,7 +9,7 @@ from ..base import BaseCamera, VisualFrame
 class SimulatedVisualCamera(BaseCamera):
     """Simulated RGB camera with synthetic MOB scenarios"""
     
-    def __init__(self, resolution=(640, 480)):
+    def __init__(self, resolution=(640, 480), intrinsics=None): # <-- FIX: Added intrinsics=None
         """
         Initialize simulated visual camera
         

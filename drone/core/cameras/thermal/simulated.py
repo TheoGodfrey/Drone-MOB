@@ -9,7 +9,7 @@ from ..base import BaseCamera, ThermalFrame
 class SimulatedThermalCamera(BaseCamera):
     """Simulated thermal camera with synthetic MOB scenarios"""
     
-    def __init__(self, resolution=(160, 120), water_temp=15.0, ambient_temp=20.0):
+    def __init__(self, resolution=(160, 120), water_temp=15.0, ambient_temp=20.0, intrinsics=None): # <-- FIX: Added intrinsics=None
         """
         Initialize simulated thermal camera
         

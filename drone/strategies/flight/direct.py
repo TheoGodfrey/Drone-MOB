@@ -16,5 +16,5 @@ class DirectFlightStrategy:
         return target_position
 
 # Factory function for composition
-def create_direct_flight_strategy():
+def create_direct_flight_strategy(config=None): # <-- FIX: Added config=None
     return DirectFlightStrategy()

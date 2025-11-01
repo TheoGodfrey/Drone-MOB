@@ -37,5 +37,8 @@ class VerticalAscentSearchStrategy:
         return Position(home_x, home_y, self.current_altitude)
 
 # Factory function for composition
-def create_vertical_ascent_search_strategy():
-    return VerticalAscentSearchStrategy(max_altitude=120.0, step_size=5.0)
+def create_vertical_ascent_search_strategy(config): # <-- FIX: Added config
+    # Use config if provided, otherwise default
+    max_alt = config.max_altitude if config else 120.0
+    step = config.step_size if config else 5.0
+    return VerticalAscentSearchStrategy(max_altitude=max_alt, step_size=step)

@@ -6,6 +6,9 @@ Implements the core logic from the patent:
 - Evolves the field with drift (e.g., ocean current).
 - Updates the field with Bayesian logic based on sensor data.
 - Generates optimal search waypoints.
+
+This file was originally at `coordinator/prob_search.py`
+and is now run locally by the Scout drone.
 """
 import numpy as np
 import math

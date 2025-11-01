@@ -35,5 +35,5 @@ class RandomSearchStrategy:
         return Position(x, y, 15.0)
 
 # Factory function for composition
-def create_random_search_strategy():
+def create_random_search_strategy(config=None): # <-- FIX: Added config=None
     return RandomSearchStrategy()

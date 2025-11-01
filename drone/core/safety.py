@@ -6,6 +6,11 @@ import asyncio
 from .drone import BaseFlightController, Telemetry
 from .position import Position
 
+# --- FIX: Added forward-ref import for MqttClient type hint ---
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .comms import MqttClient
+
 class StubObstacleSensor:
     """
     A STUB for a 3D sensor suite (e.g., LiDAR, Stereo Camera).
@@ -43,10 +48,16 @@ class CollisionAvoider(BaseFlightController):
     It intercepts 'go_to' commands and checks them for safety.
     """
     
-    def __init__(self, wrapped_controller: BaseFlightController, sensor: StubObstacleSensor):
+    # --- FIX: Added mqtt_client argument to match main.py ---
+    def __init__(self, 
+                 wrapped_controller: BaseFlightController, 
+                 sensor: StubObstacleSensor, 
+                 mqtt_client: "MqttClient"):
         print(f"[CollisionAvoider] Wrapping {type(wrapped_controller).__name__}.")
         self.controller = wrapped_controller
         self.sensor = sensor
+        self.mqtt = mqtt_client # <-- ADDED
+        self.last_obstacle_warning = 0
 
     # --- Pass-through methods ---
     
@@ -91,6 +102,15 @@ class CollisionAvoider(BaseFlightController):
         else:
             # Path is blocked, calculate a safe path
             print("[CollisionAvoider] Path blocked. Calculating alternative route...")
+            
+            # --- FIX: Use the MQTT client ---
+            if (asyncio.get_event_loop().time() - self.last_obstacle_warning > 5.0):
+                await self.mqtt.publish(f"fleet/event/{self.controller.id}", {
+                    "type": "WARNING",
+                    "data": {"message": "Obstacle detected, recalculating path."}
+                })
+                self.last_obstacle_warning = asyncio.get_event_loop().time()
+            
             safe_waypoints = await self.sensor.calculate_safe_path(current_pos, position)
             
             if not safe_waypoints:
